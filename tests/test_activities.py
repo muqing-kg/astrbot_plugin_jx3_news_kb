@@ -210,7 +210,8 @@ def test_reminder_message_contains_activity_name_and_deadline(db):
         ).fetchone()
 
     message = ActivityService(db).reminder_message(row)
-    assert "活动：签到领校服拓印券" in message
+    assert "【签到领校服拓印券 到期提醒】" in message
+    assert "待办：使用免费校服拓印券" in message
     assert "2026-09-17 07:00" in message
     assert "券到期后会消失" in message
-    assert "版本更新公告" in message
+    assert "链接：" in message
