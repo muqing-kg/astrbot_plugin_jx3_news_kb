@@ -1,0 +1,86 @@
+# astrbot_plugin_jx3_news_kb
+
+剑网3公告知识库插件。抓取 JX3API 官方公告与新闻到本地 SQLite 知识库，提供混合检索问答、活动到期提醒和 WebUI 管理页。
+
+## 功能
+
+### 公告知识库与问答
+
+- 数据来源：`GET {api_base_url}/news/records?limit={limit}`。
+- 首次安装抓 50 条建立初始库；之后每天 `00:00` 自动抓 10 条；停机超过 36 小时自动补抓 50 条兜底。
+- 公告内容变更时追加修订记录，不覆盖历史，可用于对比"以前怎么说的"。
+- 问答流程：唤醒消息 → 轻量 LLM 判断相关性 → 查询改写 → 全文（FTS5）+ 向量混合召回 → 可选 Reranker → 日期加权 → LLM 生成带来源引用的回答。
+- Embedding 与 Reranker 均为可选，未配置或失败时自动降级为全文检索，不影响可用性。
+
+### 活动到期提醒
+
+只提醒与玩家"待办"相关的到期事项：
+
+- 游戏内活动：签到、任务、代币收集/兑换、奖励领取。
+- 免费券和免费道具：校服拓印券、捏脸券、捏体型券等（按实际用途判断，不看名字里有没有"券"字）。
+- 券/道具本身的消失时间，即使活动已结束也提醒。
+- 有明确领取期的奖励：月卡奖励、活动奖励邮件、福利返还。
+
+不提醒：测试服活动、线下活动、问卷、折扣券/优惠券/几折促销、处罚与维护公告、纯玩法调整、无明确截止时间的内容、已过期事项。
+
+提醒规则：
+
+- 默认提前 1 天、每天 `10:00` 发送（`reminder_days_before` 0–3 可调）。
+- 活动窗口不足 24 小时的（如短时间开放的资格申请），在开始前 30 分钟提醒。
+- 提醒对象使用 `whitelist_groups` / `whitelist_users`，不单独配置。
+- 提醒内容包含活动名、待办、截止时间、说明、来源公告标题/日期与链接。
+
+### WebUI 管理页
+
+插件页挂在 AstrBot WebUI 内（插件详情页 → Pages），不另开端口和密码：
+
+- 状态总览：公告/分块/向量/活动/待发提醒数量，最近一次抓取结果，下次抓取时间。
+- 公告管理：搜索、类型筛选、分页，查看正文、原始 JSON、修订历史、抽取的活动与提醒计划。
+- 彻底删除：无弹窗两步确认——勾选确认 → 输入 `DELETE` → 执行。删除公告正文、分块、向量、活动抽取、待发提醒与日志，并写入指纹墓碑防止补抓恢复。
+- 手动操作：抓 1 条 / 10 条 / 补抓最近 50 条、重建全文索引、重建 Embedding。
+- 到期提醒与抓取日志查看。
+
+## 配置
+
+| 配置项 | 默认值 | 说明 |
+| --- | --- | --- |
+| `api_base_url` | `https://www.jx3api.com` | JX3API 地址 |
+| `news_records_path` | `/news/records` | 公告列表接口路径 |
+| `api_token` | 空 | JX3API Token（可选） |
+| `initial_fetch_limit` | 50 | 首次安装抓取条数 |
+| `daily_fetch_limit` | 10 | 每日抓取条数 |
+| `daily_fetch_time` | `00:00` | 每日抓取时间 |
+| `catchup_fetch_limit` | 50 | 停机补抓条数 |
+| `whitelist_groups` | 空 | 群白名单，留空不限 |
+| `whitelist_users` | 空 | 私聊白名单，留空不限 |
+| `allow_group` / `allow_private` | true | 群聊/私聊开关 |
+| `llm_provider_id` / `llm_model` | 空 | 问答与抽取用的 LLM，留空用默认 |
+| `embedding_provider_id` | 空 | 向量召回，留空只用全文检索 |
+| `reranker_provider_id` | 空 | 重排序，失败自动降级 |
+| `reminder_enabled` | true | 是否启用提醒 |
+| `reminder_days_before` | 1 | 提前提醒天数（0 为当天） |
+| `reminder_send_time` | `10:00` | 提醒发送时间 |
+| `reminder_platform_id` | 空 | 提醒发送平台，留空自动选择 |
+
+插件不做聊天命令。只有 AstrBot 已唤醒（`event.is_wake`）的消息才会进入问答判断，无关消息放行，不影响原有流程。
+
+## 部署
+
+1. 将本目录放入 AstrBot 的插件目录（或通过插件市场安装）。
+2. 在 WebUI 插件配置中按需填写 Token、白名单和提供商 ID。
+3. 重载插件，首次安装会立即抓取 50 条公告建库。
+4. 打开 WebUI → 插件 → 剑网3公告知识库 Page 管理数据。
+
+## 开发
+
+```bash
+pip install -r requirements.txt
+python -m pytest -q
+```
+
+代码结构：
+
+- `core/` — 数据库、JX3API 客户端、清洗分块、入库修订、混合检索、问答、活动抽取、调度。
+- `web_api/` — Plugin Page 后端路由（框架无关，便于测试）。
+- `pages/jx3-news/` — Plugin Page 前端。
+- `main.py` — 插件主类：消息路由、白名单、后台任务、Web API 注册。
