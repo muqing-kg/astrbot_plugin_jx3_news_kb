@@ -313,8 +313,12 @@ async function loadActivities() {
   const items = data.items || [];
   $("activities-list").innerHTML = items.length
     ? items
-        .map(
-          (item) => `
+        .map((item) => {
+          const times = [];
+          if (item.start_time) times.push(`开始：<span class="hl">${fmtDateTime(item.start_time)}</span>`);
+          if (item.end_time) times.push(`截止：<span class="hl">${fmtDateTime(item.end_time)}</span>`);
+          if (item.item_expiry) times.push(`券/道具消失：<span class="hl">${fmtDateTime(item.item_expiry)}</span>`);
+          return `
           <div class="reminder-item">
             <div class="item-head">
               <span class="name">${escapeHtml(item.name)}</span>
@@ -323,16 +327,13 @@ async function loadActivities() {
               <button class="danger-btn" data-act-del="${item.id}">删除</button>
             </div>
             <div class="muted">
-              待办：${escapeHtml(item.action || "—")}
-              · 开始：<span class="hl">${fmtDateTime(item.start_time)}</span>
-              · 截止：<span class="hl">${fmtDateTime(item.end_time)}</span>
-              · 券/道具消失：<span class="hl">${fmtDateTime(item.item_expiry)}</span>
-              ${item.item_name ? `· 物品：${escapeHtml(item.item_name)}` : ""}
+              待办：${escapeHtml(item.action || "—")}${times.length ? `<br />${times.join(" · ")}` : ""}
             </div>
+            ${item.item_name ? `<div>相关物品：${escapeHtml(item.item_name)}</div>` : ""}
             ${item.explanation ? `<div>${escapeHtml(item.explanation)}</div>` : ""}
             <div class="muted">来源：${escapeHtml(item.announcement_date)}《<a href="${escapeHtml(item.url)}" target="_blank" rel="noreferrer">${escapeHtml(item.announcement_title)}</a>》</div>
-          </div>`,
-        )
+          </div>`;
+        })
         .join("")
     : '<div class="muted">当前没有进行中的活动。</div>';
 }
