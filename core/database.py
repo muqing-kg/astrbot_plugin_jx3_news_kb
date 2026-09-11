@@ -63,7 +63,7 @@ CREATE TABLE IF NOT EXISTS chunks (
     embedding_dim INTEGER,
     embedding_updated_at TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
-    UNIQUE(announcement_id, chunk_index)
+    UNIQUE(revision_id, chunk_index)
 );
 
 CREATE INDEX IF NOT EXISTS idx_chunks_announcement ON chunks(announcement_id);
