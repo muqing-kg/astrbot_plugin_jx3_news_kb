@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS announcements (
     content_hash TEXT NOT NULL,
     published_at TEXT NOT NULL,
     updated_at_source TEXT NOT NULL,
+    activity_extracted_at TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
     modified_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
 );
