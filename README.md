@@ -51,9 +51,8 @@
 | `daily_fetch_limit` | 10 | 每日抓取条数 |
 | `daily_fetch_time` | `00:00` | 每日抓取时间 |
 | `catchup_fetch_limit` | 50 | 停机补抓条数 |
-| `whitelist_groups` | 空 | 群白名单，留空不限 |
-| `whitelist_users` | 空 | 私聊白名单，留空不限 |
-| `allow_group` / `allow_private` | true | 群聊/私聊开关 |
+| `whitelist_groups` | 空 | 群白名单，问答与提醒共用；留空表示所有群可用 |
+| `whitelist_users` | 空 | 私聊白名单，问答与提醒共用；留空表示所有私聊可用 |
 | `llm_provider_id` / `llm_model` | 空 | 问答与抽取用的 LLM，留空用默认 |
 | `embedding_provider_id` | 空 | 向量召回，留空只用全文检索 |
 | `reranker_provider_id` | 空 | 重排序，失败自动降级 |

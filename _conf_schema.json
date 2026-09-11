@@ -10,76 +10,78 @@
     "default": "/news/records"
   },
   "api_token": {
-    "description": "JX3API Token（可选）",
+    "description": "JX3API Token",
     "type": "string",
     "default": "",
-    "secret": true
+    "secret": true,
+    "hint": "可选。在 JX3API 申请的访问令牌。"
   },
   "initial_fetch_limit": {
-    "description": "首次安装（数据库为空）时抓取的公告条数",
+    "description": "首次安装抓取条数",
     "type": "int",
-    "default": 50
+    "default": 50,
+    "hint": "数据库为空时（首次安装）一次性抓取的公告条数，用于建立初始知识库。"
   },
   "daily_fetch_limit": {
-    "description": "每日自动抓取的公告条数",
+    "description": "每日抓取条数",
     "type": "int",
-    "default": 10
+    "default": 10,
+    "hint": "每天定时抓取的公告条数。官方同一天可能发多条公告，建议保留一定余量。"
   },
   "daily_fetch_time": {
-    "description": "每日自动抓取时间（HH:MM）",
+    "description": "每日抓取时间",
     "type": "string",
-    "default": "00:00"
+    "default": "00:00",
+    "hint": "24 小时制 HH:MM 格式，按下方时区计算。"
   },
   "catchup_fetch_limit": {
-    "description": "停机补抓（超过36小时未抓取）时抓取的条数",
+    "description": "停机补抓条数",
     "type": "int",
-    "default": 50
+    "default": 50,
+    "hint": "停机超过 36 小时后恢复时，自动改用该条数一次性补抓，避免漏公告。"
   },
   "timezone": {
-    "description": "时区，用于每日任务和提醒时间计算",
+    "description": "时区",
     "type": "string",
-    "default": "Asia/Shanghai"
+    "default": "Asia/Shanghai",
+    "hint": "用于计算每日抓取时间和提醒时间。"
   },
   "whitelist_groups": {
-    "description": "群白名单（群号列表，留空表示所有群可用；问答与提醒共用）",
+    "description": "群白名单，问答与提醒共用",
     "type": "list",
-    "default": []
+    "default": [],
+    "hint": "填写允许使用问答并接收提醒的群号。留空表示所有群可用。"
   },
   "whitelist_users": {
-    "description": "私聊白名单（用户号列表，留空表示所有私聊可用；问答与提醒共用）",
+    "description": "私聊白名单，问答与提醒共用",
     "type": "list",
-    "default": []
-  },
-  "allow_group": {
-    "description": "是否在群聊中启用问答",
-    "type": "bool",
-    "default": true
-  },
-  "allow_private": {
-    "description": "是否在私聊中启用问答",
-    "type": "bool",
-    "default": true
+    "default": [],
+    "hint": "填写允许使用问答并接收提醒的用户号。留空表示所有私聊可用。"
   },
   "llm_provider_id": {
-    "description": "用于问答与活动抽取的 LLM 提供商（留空使用默认提供商）",
+    "description": "问答与活动抽取的 LLM 提供商",
     "type": "string",
     "default": "",
-    "_special": "select_provider"
+    "_special": "select_provider",
+    "hint": "留空时使用 AstrBot 默认提供商。"
   },
   "llm_model": {
-    "description": "指定 LLM 模型名（留空使用提供商默认模型）",
+    "description": "指定 LLM 模型名",
     "type": "string",
-    "default": ""
+    "default": "",
+    "hint": "留空时使用提供商的默认模型。"
   },
   "embedding_provider_id": {
-    "description": "向量召回使用的 Embedding 提供商 ID（留空则只用全文检索）",
+    "description": "向量召回的 Embedding 提供商",
     "type": "string",
-    "default": ""
+    "default": "",
+    "hint": "填写提供商 ID，用于语义相似度召回。留空则只使用全文检索。"
   },
   "reranker_provider_id": {
-    "description": "重排序使用的 Reranker 提供商 ID（留空或失败时自动降级）",
+    "description": "重排序的 Reranker 提供商",
     "type": "string",
-    "default": ""
+    "default": "",
+    "hint": "填写提供商 ID，对召回结果做精排。留空或调用失败时自动降级，不影响使用。"
   },
   "reminder_enabled": {
     "description": "是否启用活动到期提醒",
@@ -87,18 +89,21 @@
     "default": true
   },
   "reminder_days_before": {
-    "description": "提前几天提醒（0 表示当天提醒）",
+    "description": "提前几天提醒",
     "type": "int",
-    "default": 1
+    "default": 1,
+    "hint": "0 表示当天提醒，1 到 3 表示提前一到三天。不足 24 小时的短活动会在开始前 30 分钟提醒。"
   },
   "reminder_send_time": {
-    "description": "提醒发送时间（HH:MM）",
+    "description": "提醒发送时间",
     "type": "string",
-    "default": "10:00"
+    "default": "10:00",
+    "hint": "24 小时制 HH:MM 格式，在该时间发送当天到期的提醒。"
   },
   "reminder_platform_id": {
-    "description": "提醒发送使用的平台适配器 ID（留空自动选择第一个非 webchat 平台）",
+    "description": "提醒发送的平台",
     "type": "string",
-    "default": ""
+    "default": "",
+    "hint": "提醒是插件定时主动推送的消息，必须指定发到哪个消息平台适配器实例。填写消息平台配置里对应适配器的 ID。留空时自动选择第一个非 webchat 的平台；配置了多个平台时建议明确填写。"
   }
 }
