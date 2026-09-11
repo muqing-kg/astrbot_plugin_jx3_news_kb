@@ -297,7 +297,7 @@ def test_send_due_reminders_merges_same_target(monkeypatch, tmp_path):
                 ) VALUES (?, 'group', 'fake:GroupMessage:10001',
                           datetime('now', 'localtime', '-1 minute'), ?)
                 """,
-                (cursor.lastrowid, f"【剑网3到期提醒】\n活动：{name}"),
+                (cursor.lastrowid, f"【{name} 到期提醒】\n待办：使用"),
             )
 
     sent = asyncio.run(plugin.send_due_reminders())
@@ -305,9 +305,9 @@ def test_send_due_reminders_merges_same_target(monkeypatch, tmp_path):
     # One combined message per target instead of one message per reminder.
     assert len(context.sent) == 1
     _, chain = context.sent[0]
-    assert "今日共 2 项到期" in chain.parts[0]
-    assert "活动：活动A" in chain.parts[0]
-    assert "活动：活动B" in chain.parts[0]
+    assert "今日到期提醒 · 共 2 项" in chain.parts[0]
+    assert "【活动A 到期提醒】" in chain.parts[0]
+    assert "【活动B 到期提醒】" in chain.parts[0]
 
     with plugin.db.connect() as conn:
         statuses = [

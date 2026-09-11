@@ -26,22 +26,16 @@ DISPATCH_GRACE = timedelta(hours=6)
 # Fetch and reminder logs older than this are pruned by the daily job.
 LOG_RETENTION_DAYS = 7
 
-REMINDER_HEADER = "【剑网3到期提醒】"
-
-
 def merge_reminder_texts(texts: list[str]) -> str:
-    """Combine several reminder messages for one target into a single message."""
+    """Combine several reminder messages for one target into a single message.
+
+    Each item keeps its own ``【活动名 到期提醒】`` heading; items are
+    separated by a blank line under one summary header.
+    """
     if len(texts) <= 1:
         return texts[0] if texts else ""
-    sections = []
-    for text in texts:
-        body = text
-        if body.startswith(REMINDER_HEADER):
-            body = body[len(REMINDER_HEADER):]
-        sections.append(body.strip())
-    return f"{REMINDER_HEADER}今日共 {len(sections)} 项到期：\n\n" + "\n\n———\n\n".join(
-        sections
-    )
+    header = f"【今日到期提醒 · 共 {len(texts)} 项】"
+    return header + "\n\n" + "\n\n".join(text.strip() for text in texts)
 
 
 @dataclass(slots=True)
@@ -430,7 +424,6 @@ __all__ = [
     "CATCHUP_THRESHOLD",
     "DISPATCH_GRACE",
     "LOG_RETENTION_DAYS",
-    "REMINDER_HEADER",
     "SHORT_WINDOW",
     "SHORT_WINDOW_REMIND_BEFORE",
     "MESSAGE_TYPE_TO_SCOPE",

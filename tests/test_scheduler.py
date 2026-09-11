@@ -254,7 +254,7 @@ def test_create_pending_reminders_is_idempotent(tmp_path):
         "fake:GroupMessage:10001",
         "fake:FriendMessage:20001",
     }
-    assert all("【剑网3到期提醒】" in row["message_text"] for row in rows)
+    assert all("【签到领校服拓印券 到期提醒】" in row["message_text"] for row in rows)
     assert all("签到领校服拓印券" in row["message_text"] for row in rows)
 
 
@@ -354,21 +354,23 @@ def test_cancel_reminders_for_announcement(tmp_path):
 
 
 def test_merge_reminder_texts_combines_same_day_items():
-    from core.scheduler import REMINDER_HEADER, merge_reminder_texts
+    from core.scheduler import merge_reminder_texts
 
-    single = f"{REMINDER_HEADER}\n活动：A\n截止：2026-09-17 07:00"
+    single = "【活动A 到期提醒】\n待办：使用\n截止：2026-09-17 07:00"
     assert merge_reminder_texts([single]) == single
 
     merged = merge_reminder_texts(
         [
-            f"{REMINDER_HEADER}\n活动：A\n截止：2026-09-17 07:00",
-            f"{REMINDER_HEADER}\n活动：B\n截止：2026-09-17 07:00",
+            "【活动A 到期提醒】\n待办：使用\n截止：2026-09-17 07:00",
+            "【活动B 到期提醒】\n待办：领取\n截止：2026-09-17 07:00",
         ]
     )
-    assert merged.startswith(f"{REMINDER_HEADER}今日共 2 项到期：")
-    assert "活动：A" in merged
-    assert "活动：B" in merged
-    assert merged.count(REMINDER_HEADER) == 1
+    assert merged.startswith("【今日到期提醒 · 共 2 项】")
+    assert "【活动A 到期提醒】" in merged
+    assert "【活动B 到期提醒】" in merged
+    # Items are separated by a blank line, no divider lines.
+    assert "———" not in merged
+    assert "【今日到期提醒 · 共 2 项】\n\n【活动A 到期提醒】" in merged
 
 
 def test_prune_logs_keeps_recent_only(tmp_path):

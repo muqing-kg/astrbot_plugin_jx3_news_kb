@@ -270,11 +270,9 @@ class ActivityService:
         item_text = f"\n相关物品：{row['item_name']}" if row["item_name"] else ""
         explanation = f"\n说明：{row['explanation']}" if row["explanation"] else ""
         return (
-            f"【剑网3到期提醒】\n"
-            f"活动：{row['name']}\n"
+            f"【{row['name']} 到期提醒】\n"
             f"待办：{row['action'] or '请及时处理'}\n"
             f"{deadline_type}：{format_deadline(deadline)}{item_text}{explanation}\n"
-            f"来源：{row['announcement_date']}《{row['title']}》\n"
             f"链接：{row['url']}"
         )
 
