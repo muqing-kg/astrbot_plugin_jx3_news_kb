@@ -373,6 +373,31 @@ def test_merge_reminder_texts_combines_same_day_items():
     assert "【今日到期提醒 · 共 2 项】\n\n【活动A 到期提醒】" in merged
 
 
+def test_merge_dedupes_same_source_link():
+    from core.scheduler import merge_reminder_texts
+
+    url = "https://jx3.xoyo.com/announce/gg.html?id=1"
+    merged = merge_reminder_texts(
+        [
+            f"【活动A 到期提醒】\n待办：使用\n链接：{url}",
+            f"【活动B 到期提醒】\n待办：领取\n链接：{url}",
+        ]
+    )
+    assert merged.count("链接：") == 1
+    assert merged.rfind("链接：") > merged.rfind("【活动B 到期提醒】")
+    assert "待办：使用\n\n【活动B" in merged  # link line removed from item A
+
+    other = "https://jx3.xoyo.com/announce/gg.html?id=2"
+    mixed = merge_reminder_texts(
+        [
+            f"【活动A 到期提醒】\n待办：使用\n链接：{url}",
+            f"【活动B 到期提醒】\n待办：领取\n链接：{other}",
+        ]
+    )
+    # Different sources keep their own link lines.
+    assert mixed.count("链接：") == 2
+
+
 def test_prune_logs_keeps_recent_only(tmp_path):
     scheduler = _make_scheduler(tmp_path)
     announcement_id = _insert_announcement(scheduler.db)

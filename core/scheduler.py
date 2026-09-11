@@ -26,16 +26,45 @@ DISPATCH_GRACE = timedelta(hours=6)
 # Fetch and reminder logs older than this are pruned by the daily job.
 LOG_RETENTION_DAYS = 7
 
+LINK_PREFIX = "链接："
+
+
 def merge_reminder_texts(texts: list[str]) -> str:
     """Combine several reminder messages for one target into a single message.
 
     Each item keeps its own ``【活动名 到期提醒】`` heading; items are
-    separated by a blank line under one summary header.
+    separated by a blank line under one summary header. When every item
+    comes from the same source announcement, the link line is written once
+    at the end instead of being repeated per item.
     """
     if len(texts) <= 1:
         return texts[0] if texts else ""
-    header = f"【今日到期提醒 · 共 {len(texts)} 项】"
-    return header + "\n\n" + "\n\n".join(text.strip() for text in texts)
+
+    bodies: list[str] = []
+    links: list[str] = []
+    for text in texts:
+        body: list[str] = []
+        link = ""
+        for line in text.strip().splitlines():
+            if line.startswith(LINK_PREFIX):
+                link = line[len(LINK_PREFIX):].strip()
+            else:
+                body.append(line)
+        bodies.append("\n".join(body).strip())
+        links.append(link)
+
+    unique_links = list(dict.fromkeys(link for link in links if link))
+    if len(unique_links) == 1:
+        sections = list(bodies)
+        sections[-1] += f"\n{LINK_PREFIX}{unique_links[0]}"
+    else:
+        sections = [
+            body + (f"\n{LINK_PREFIX}{link}" if link else "")
+            for body, link in zip(bodies, links, strict=True)
+        ]
+
+    header = f"【今日到期提醒 · 共 {len(sections)} 项】"
+    return header + "\n\n" + "\n\n".join(sections)
 
 
 @dataclass(slots=True)
