@@ -327,7 +327,7 @@ async function loadActivities() {
               <button class="danger-btn" data-act-del="${item.id}">删除</button>
             </div>
             <div class="muted">
-              待办：${escapeHtml(item.action || "—")}${times.length ? `<br />${times.join(" · ")}` : ""}
+              待办：${escapeHtml(item.action || "请及时处理")}${times.length ? `<br />${times.join(" · ")}` : ""}
             </div>
             ${item.item_name ? `<div>相关物品：${escapeHtml(item.item_name)}</div>` : ""}
             ${item.explanation ? `<div>${escapeHtml(item.explanation)}</div>` : ""}

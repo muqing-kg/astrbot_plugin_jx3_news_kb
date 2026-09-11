@@ -11,6 +11,7 @@
   --danger-weak: #fdf0f0;
   --ok: #2f9e63;
   --warn: #c07f16;
+  --highlight: #d97706;
 }
 
 [data-theme="dark"] {
@@ -25,6 +26,7 @@
   --danger-weak: #3a2426;
   --ok: #5cc48f;
   --warn: #e0a63d;
+  --highlight: #fbbf24;
 }
 
 * { box-sizing: border-box; }
@@ -170,7 +172,7 @@ input[type="search"], input[type="text"], select {
   flex-wrap: wrap;
 }
 .item-head button { margin-left: auto; }
-.hl { color: var(--primary); font-weight: 600; }
+.hl { color: var(--highlight); font-weight: 600; }
 .chunk-item { margin-bottom: 10px; }
 .activity-item .name { font-weight: 600; }
 .tag {
