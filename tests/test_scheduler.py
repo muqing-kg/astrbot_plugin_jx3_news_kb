@@ -139,7 +139,11 @@ async def test_fetch_and_ingest_logs_success_and_error(tmp_path):
     assert "boom" in logs[1]["error"]
 
 
-TARGETS = ReminderTargets(groups=["10001"], users=["20001"], days_before=1, send_time="10:00")
+TARGETS = ReminderTargets(
+    sessions=["fake:GroupMessage:10001", "fake:FriendMessage:20001"],
+    days_before=1,
+    send_time="10:00",
+)
 
 
 def test_reminder_scheduled_one_day_before_at_send_time(tmp_path):
@@ -243,9 +247,13 @@ def test_create_pending_reminders_is_idempotent(tmp_path):
 
     with scheduler.db.connect() as conn:
         rows = conn.execute(
-            "SELECT target_type, message_text FROM reminders ORDER BY id"
+            "SELECT target_type, target_id, message_text FROM reminders ORDER BY id"
         ).fetchall()
     assert {row["target_type"] for row in rows} == {"group", "private"}
+    assert {row["target_id"] for row in rows} == {
+        "fake:GroupMessage:10001",
+        "fake:FriendMessage:20001",
+    }
     assert all("【剑网3到期提醒】" in row["message_text"] for row in rows)
     assert all("签到领校服拓印券" in row["message_text"] for row in rows)
 
@@ -256,7 +264,54 @@ def test_create_pending_reminders_without_targets(tmp_path):
     _insert_activity(
         scheduler.db, announcement_id, end_time="2099-09-17T07:00:00+08:00"
     )
-    assert scheduler.create_pending_reminders(ReminderTargets(groups=[], users=[])) == 0
+    assert scheduler.create_pending_reminders(ReminderTargets(sessions=[])) == 0
+
+
+def test_from_config_collects_full_session_addresses():
+    targets = ReminderTargets.from_config(
+        {
+            "whitelist_groups": [
+                "aiocqhttp:GroupMessage:10001",
+                "10002",
+            ],
+            "whitelist_users": [
+                "qqofficial:FriendMessage:20001",
+                "not-a-session",
+                "aiocqhttp:WrongType:1",
+            ],
+            "reminder_days_before": 2,
+            "reminder_send_time": "09:30",
+        }
+    )
+    assert targets.sessions == [
+        "aiocqhttp:GroupMessage:10001",
+        "qqofficial:FriendMessage:20001",
+    ]
+    assert targets.days_before == 2
+    assert targets.send_time == "09:30"
+    assert targets.as_pairs() == [
+        ("group", "aiocqhttp:GroupMessage:10001"),
+        ("private", "qqofficial:FriendMessage:20001"),
+    ]
+
+
+def test_parse_session_address_variants():
+    from core.scheduler import extract_session_id, parse_session_address
+
+    assert parse_session_address("aiocqhttp:GroupMessage:123") == (
+        "group",
+        "aiocqhttp:GroupMessage:123",
+    )
+    assert parse_session_address("webchat:FriendMessage:abc ") == (
+        "private",
+        "webchat:FriendMessage:abc",
+    )
+    assert parse_session_address("10086") is None
+    assert parse_session_address("bad:Type:1") is None
+    assert parse_session_address("a:GroupMessage:") is None
+    assert extract_session_id("aiocqhttp:GroupMessage:123") == "123"
+    assert extract_session_id("10086") == "10086"
+    assert extract_session_id("") == ""
 
 
 def test_due_reminders_and_mark(tmp_path):

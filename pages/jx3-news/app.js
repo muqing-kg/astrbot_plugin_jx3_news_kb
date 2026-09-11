@@ -91,7 +91,7 @@ function renderStats(data) {
           (item) => `
             <div class="reminder-item">
               <span class="name">${escapeHtml(item.name)}</span>
-              <span class="tag">${escapeHtml(item.target_type)}:${escapeHtml(item.target_id)}</span>
+              <span class="tag">${escapeHtml(item.target_id)}</span>
               <div class="muted">计划发送：${fmtDateTime(item.scheduled_at)}　来源：${escapeHtml(item.announcement_title || "")}</div>
             </div>`,
         )
@@ -334,10 +334,10 @@ async function loadReminders() {
     ? items
         .map(
           (item) => `
-          <div class="reminder-item">
-            <span class="name">${escapeHtml(item.activity_name)}</span>
-            <span class="tag status-${escapeHtml(item.status)}">${escapeHtml(item.status)}</span>
-            <span class="tag">${escapeHtml(item.target_type)}:${escapeHtml(item.target_id)}</span>
+              <div class="reminder-item">
+                <span class="name">${escapeHtml(item.activity_name)}</span>
+                <span class="tag status-${escapeHtml(item.status)}">${escapeHtml(item.status)}</span>
+                <span class="tag">${escapeHtml(item.target_id)}</span>
             <div class="muted">
               计划：${fmtDateTime(item.scheduled_at)}
               · 活动截止：${fmtDateTime(item.end_time)}

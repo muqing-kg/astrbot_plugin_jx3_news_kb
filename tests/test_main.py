@@ -239,7 +239,7 @@ def test_send_due_reminders_marks_sent(monkeypatch, tmp_path):
             """
             INSERT INTO reminders(
                 activity_id, target_type, target_id, scheduled_at, message_text
-            ) VALUES (?, 'group', '10001',
+            ) VALUES (?, 'group', 'fake:GroupMessage:10001',
                       datetime('now', 'localtime', '-1 minute'), '提醒内容')
             """,
             (activity_id,),
@@ -249,7 +249,7 @@ def test_send_due_reminders_marks_sent(monkeypatch, tmp_path):
     assert sent == 1
     assert len(context.sent) == 1
     session, chain = context.sent[0]
-    assert session.endswith(":GroupMessage:10001")
+    assert session == "fake:GroupMessage:10001"
     assert chain.parts == ["提醒内容"]
 
     with plugin.db.connect() as conn:

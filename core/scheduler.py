@@ -27,28 +27,64 @@ DISPATCH_GRACE = timedelta(hours=6)
 
 @dataclass(slots=True)
 class ReminderTargets:
-    """Whitelist-derived reminder recipients."""
+    """Whitelist-derived reminder recipients as full session addresses.
 
-    groups: list[str]
-    users: list[str]
+    Entries follow AstrBot's unified_msg_origin format
+    ``platform:MessageType:session_id`` (e.g. ``aiocqhttp:GroupMessage:123``).
+    """
+
+    sessions: list[str]
     days_before: int = 1
     send_time: str = "10:00"
 
     def as_pairs(self) -> list[tuple[str, str]]:
-        pairs = [("group", group) for group in self.groups]
-        pairs.extend(("private", user) for user in self.users)
+        pairs = []
+        for session in self.sessions:
+            scope = "group" if ":GroupMessage:" in session else "private"
+            pairs.append((scope, session))
         return pairs
 
     @classmethod
     def from_config(cls, config: dict[str, Any]) -> ReminderTargets:
-        groups = [str(item) for item in (config.get("whitelist_groups") or [])]
-        users = [str(item) for item in (config.get("whitelist_users") or [])]
+        raw_items = [str(item) for item in (config.get("whitelist_groups") or [])]
+        raw_items += [str(item) for item in (config.get("whitelist_users") or [])]
+        sessions = []
+        for item in raw_items:
+            parsed = parse_session_address(item)
+            if parsed is not None:
+                sessions.append(parsed[1])
         try:
             days_before = max(0, int(config.get("reminder_days_before", 1)))
         except (TypeError, ValueError):
             days_before = 1
         send_time = str(config.get("reminder_send_time") or "10:00")
-        return cls(groups=groups, users=users, days_before=days_before, send_time=send_time)
+        return cls(sessions=sessions, days_before=days_before, send_time=send_time)
+
+
+MESSAGE_TYPE_TO_SCOPE = {
+    "GroupMessage": "group",
+    "FriendMessage": "private",
+}
+
+
+def parse_session_address(value: str) -> tuple[str, str] | None:
+    """Parse ``platform:MessageType:session_id`` into (scope, normalized address)."""
+    parts = str(value or "").strip().split(":", 2)
+    if len(parts) != 3:
+        return None
+    platform, message_type, session_id = (part.strip() for part in parts)
+    scope = MESSAGE_TYPE_TO_SCOPE.get(message_type)
+    if not platform or not session_id or scope is None:
+        return None
+    return scope, f"{platform}:{message_type}:{session_id}"
+
+
+def extract_session_id(value: str) -> str:
+    """Session id from a full address, or the value itself when it is a bare id."""
+    parts = str(value or "").strip().split(":", 2)
+    if len(parts) == 3 and parts[1].strip() in MESSAGE_TYPE_TO_SCOPE:
+        return parts[2].strip()
+    return str(value or "").strip()
 
 
 class SchedulerService:
@@ -357,7 +393,10 @@ __all__ = [
     "DISPATCH_GRACE",
     "SHORT_WINDOW",
     "SHORT_WINDOW_REMIND_BEFORE",
+    "MESSAGE_TYPE_TO_SCOPE",
     "ReminderTargets",
     "SchedulerService",
+    "extract_session_id",
     "format_deadline",
+    "parse_session_address",
 ]

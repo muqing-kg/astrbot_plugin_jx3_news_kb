@@ -26,7 +26,7 @@
     "description": "每日抓取条数",
     "type": "int",
     "default": 10,
-    "hint": "每天定时抓取的公告条数。官方同一天可能发多条公告，建议保留一定余量。"
+    "hint": "每天定时抓取的公告条数。"
   },
   "daily_fetch_time": {
     "description": "每日抓取时间",
@@ -38,7 +38,7 @@
     "description": "停机补抓条数",
     "type": "int",
     "default": 50,
-    "hint": "停机超过 36 小时后恢复时，自动改用该条数一次性补抓，避免漏公告。"
+    "hint": "停机超过 36 小时后恢复时，自动改用该条数补抓。"
   },
   "timezone": {
     "description": "时区",
@@ -50,13 +50,13 @@
     "description": "群白名单，问答与提醒共用",
     "type": "list",
     "default": [],
-    "hint": "填写允许使用问答并接收提醒的群号。留空表示所有群可用。"
+    "hint": "填写群号，或完整会话地址：平台ID:GroupMessage:群号。留空表示所有群可用。完整会话地址同时作为到期提醒的发送目标；纯群号仅用于问答过滤。"
   },
   "whitelist_users": {
     "description": "私聊白名单，问答与提醒共用",
     "type": "list",
     "default": [],
-    "hint": "填写允许使用问答并接收提醒的用户号。留空表示所有私聊可用。"
+    "hint": "填写用户号，或完整会话地址：平台ID:FriendMessage:用户号。留空表示所有私聊可用。完整会话地址同时作为到期提醒的发送目标；纯用户号仅用于问答过滤。"
   },
   "llm_provider_id": {
     "description": "问答与活动抽取的 LLM 提供商",
@@ -81,7 +81,7 @@
     "description": "重排序的 Reranker 提供商",
     "type": "string",
     "default": "",
-    "hint": "填写提供商 ID，对召回结果做精排。留空或调用失败时自动降级，不影响使用。"
+    "hint": "填写提供商 ID，对召回结果做精排。留空则不启用。"
   },
   "reminder_enabled": {
     "description": "是否启用活动到期提醒",
@@ -92,18 +92,12 @@
     "description": "提前几天提醒",
     "type": "int",
     "default": 1,
-    "hint": "0 表示当天提醒，1 到 3 表示提前一到三天。不足 24 小时的短活动会在开始前 30 分钟提醒。"
+    "hint": "0 表示当天提醒，1 到 3 表示提前一到三天。不足 24 小时的短活动在开始前 30 分钟提醒。"
   },
   "reminder_send_time": {
     "description": "提醒发送时间",
     "type": "string",
     "default": "10:00",
     "hint": "24 小时制 HH:MM 格式，在该时间发送当天到期的提醒。"
-  },
-  "reminder_platform_id": {
-    "description": "提醒发送的平台",
-    "type": "string",
-    "default": "",
-    "hint": "提醒是插件定时主动推送的消息，必须指定发到哪个消息平台适配器实例。填写消息平台配置里对应适配器的 ID。留空时自动选择第一个非 webchat 的平台；配置了多个平台时建议明确填写。"
   }
 }

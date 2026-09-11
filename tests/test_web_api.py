@@ -13,6 +13,8 @@ from core.ingest import IngestService
 from core.scheduler import ReminderTargets, SchedulerService
 from web_api import routes
 
+FULL_GROUP_SESSION = "fake:GroupMessage:10001"
+
 
 class FakePlugin:
     """Duck-typed plugin exposing what the route handlers need."""
@@ -113,7 +115,7 @@ def test_detail_includes_revisions_activities_reminders(plugin):
              "2099-09-17T07:00:00+08:00"),
         )
     plugin.scheduler.create_pending_reminders(
-        ReminderTargets(groups=["10001"], users=[])
+        ReminderTargets(sessions=[FULL_GROUP_SESSION])
     )
 
     data = asyncio.run(routes.handle_announcement_detail(
@@ -151,7 +153,7 @@ def test_delete_removes_everything_and_tombstones(plugin):
              "2099-09-17T07:00:00+08:00"),
         )
     plugin.scheduler.create_pending_reminders(
-        ReminderTargets(groups=["10001"], users=["20001"])
+        ReminderTargets(sessions=[FULL_GROUP_SESSION, "fake:FriendMessage:20001"])
     )
 
     data = asyncio.run(routes.handle_announcement_delete(
@@ -217,7 +219,7 @@ def test_reminders_route_filters_by_status(plugin):
              "2099-09-17T07:00:00+08:00"),
         )
     plugin.scheduler.create_pending_reminders(
-        ReminderTargets(groups=["10001"], users=[])
+        ReminderTargets(sessions=[FULL_GROUP_SESSION])
     )
     pending = asyncio.run(routes.handle_reminders(plugin, {}, {}))
     assert pending["status"] == "pending"

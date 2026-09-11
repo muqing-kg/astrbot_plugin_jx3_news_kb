@@ -22,7 +22,11 @@ try:
     from .core.jx3api import NewsClient
     from .core.qa import QAService
     from .core.search import SearchService
-    from .core.scheduler import ReminderTargets, SchedulerService
+    from .core.scheduler import (
+        ReminderTargets,
+        SchedulerService,
+        extract_session_id,
+    )
     from .web_api.routes import ROUTE_TABLE
 except ImportError:  # imported as a top-level module (tests, direct run)
     from core.activities import ActivityService
@@ -31,7 +35,11 @@ except ImportError:  # imported as a top-level module (tests, direct run)
     from core.jx3api import NewsClient
     from core.qa import QAService
     from core.search import SearchService
-    from core.scheduler import ReminderTargets, SchedulerService
+    from core.scheduler import (
+        ReminderTargets,
+        SchedulerService,
+        extract_session_id,
+    )
     from web_api.routes import ROUTE_TABLE
 
 logger = logging.getLogger("astrbot.plugin.jx3_news_kb")
@@ -203,28 +211,12 @@ class JX3NewsKBPlugin(Star):
     # ---------- reminders ----------
 
     async def _send_text(self, target_type: str, target_id: str, text: str) -> tuple[bool, str]:
-        platform_id = str(self.config.get("reminder_platform_id") or "").strip()
-        if not platform_id:
-            platform_id = self._default_platform_id()
-        if not platform_id:
-            return False, "no usable platform adapter for reminders"
-        message_type = "GroupMessage" if target_type == "group" else "FriendMessage"
-        session = f"{platform_id}:{message_type}:{target_id}"
+        """target_id is a full session address ``platform:MessageType:id``."""
         try:
-            sent = await self.context.send_message(session, MessageChain().message(text))
+            sent = await self.context.send_message(target_id, MessageChain().message(text))
             return bool(sent), "" if sent else "no matching platform"
         except Exception as exc:  # noqa: BLE001 - logged into reminder history
             return False, str(exc)
-
-    def _default_platform_id(self) -> str:
-        try:
-            for platform in self.context.platform_manager.platform_insts:
-                meta = platform.meta()
-                if meta.id and meta.id != "webchat":
-                    return meta.id
-        except Exception:  # noqa: BLE001
-            return ""
-        return ""
 
     async def send_due_reminders(self) -> int:
         if not bool(self.config.get("reminder_enabled", True)):
@@ -326,10 +318,16 @@ class JX3NewsKBPlugin(Star):
         if group_id:
             if not bool(self.config.get("allow_group", True)):
                 return False
-            whitelist = [str(item) for item in (self.config.get("whitelist_groups") or [])]
+            whitelist = [
+                extract_session_id(str(item))
+                for item in (self.config.get("whitelist_groups") or [])
+            ]
             return not whitelist or group_id in whitelist
         if not bool(self.config.get("allow_private", True)):
             return False
-        whitelist = [str(item) for item in (self.config.get("whitelist_users") or [])]
+        whitelist = [
+            extract_session_id(str(item))
+            for item in (self.config.get("whitelist_users") or [])
+        ]
         sender = str(event.get_sender_id() or "").strip()
         return not whitelist or sender in whitelist

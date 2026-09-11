@@ -27,7 +27,7 @@
 
 - 默认提前 1 天、每天 `10:00` 发送（`reminder_days_before` 0–3 可调）。
 - 活动窗口不足 24 小时的（如短时间开放的资格申请），在开始前 30 分钟提醒。
-- 提醒对象使用 `whitelist_groups` / `whitelist_users`，不单独配置。
+- 发送目标使用白名单里的完整会话地址（`平台ID:GroupMessage:群号` 或 `平台ID:FriendMessage:用户号`）；白名单里的纯群号/用户号只用于问答过滤，不作为提醒目标。
 - 提醒内容包含活动名、待办、截止时间、说明、来源公告标题/日期与链接。
 
 ### WebUI 管理页
@@ -51,15 +51,14 @@
 | `daily_fetch_limit` | 10 | 每日抓取条数 |
 | `daily_fetch_time` | `00:00` | 每日抓取时间 |
 | `catchup_fetch_limit` | 50 | 停机补抓条数 |
-| `whitelist_groups` | 空 | 群白名单，问答与提醒共用；留空表示所有群可用 |
-| `whitelist_users` | 空 | 私聊白名单，问答与提醒共用；留空表示所有私聊可用 |
+| `whitelist_groups` | 空 | 群白名单：群号或 `平台ID:GroupMessage:群号`；留空表示所有群可用 |
+| `whitelist_users` | 空 | 私聊白名单：用户号或 `平台ID:FriendMessage:用户号`；留空表示所有私聊可用 |
 | `llm_provider_id` / `llm_model` | 空 | 问答与抽取用的 LLM，留空用默认 |
 | `embedding_provider_id` | 空 | 向量召回，留空只用全文检索 |
 | `reranker_provider_id` | 空 | 重排序，失败自动降级 |
 | `reminder_enabled` | true | 是否启用提醒 |
 | `reminder_days_before` | 1 | 提前提醒天数（0 为当天） |
 | `reminder_send_time` | `10:00` | 提醒发送时间 |
-| `reminder_platform_id` | 空 | 提醒发送平台，留空自动选择 |
 
 插件不做聊天命令。只有 AstrBot 已唤醒（`event.is_wake`）的消息才会进入问答判断，无关消息放行，不影响原有流程。
 
