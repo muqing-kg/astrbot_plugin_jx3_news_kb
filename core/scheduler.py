@@ -378,7 +378,8 @@ class SchedulerService:
             last = conn.execute(
                 """
                 SELECT started_at, finished_at, success, fetch_limit,
-                       inserted_count, revised_count, error
+                       returned_count, inserted_count, revised_count,
+                       skipped_count, error
                 FROM fetch_logs ORDER BY id DESC LIMIT 1
                 """
             ).fetchone()

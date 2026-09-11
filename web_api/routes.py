@@ -51,13 +51,15 @@ async def handle_stats(plugin: Any, query: dict[str, Any], payload: dict[str, An
     snapshot = plugin.scheduler.status_snapshot(
         str(plugin.config.get("daily_fetch_time", "00:00"))
     )
+    probe = await plugin.probe_providers()
     return {
         "counts": counts,
         "pending_reminders": pending,
         "upcoming_reminders": [dict(row) for row in scheduled_reminders],
         "last_fetch": snapshot["last_fetch"],
         "next_fetch_at": snapshot["next_fetch_at"],
-        "embedding_available": plugin.embedding_provider is not None,
+        "embedding_available": probe["embedding"]["available"],
+        "providers": probe,
     }
 
 

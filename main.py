@@ -94,6 +94,7 @@ class JX3NewsKBPlugin(Star):
             token=str(config.get("api_token") or ""),
         )
         self._background_tasks: list[asyncio.Task] = []
+        self._provider_probe: dict[str, Any] | None = None
         self._register_routes()
 
     # ---------- configuration helpers ----------
@@ -138,6 +139,39 @@ class JX3NewsKBPlugin(Star):
     @property
     def reranker_provider(self) -> Any | None:
         return self._reranker_provider
+
+    async def probe_providers(self) -> dict[str, Any]:
+        """Probe embedding dimension and reranker availability (cached per load)."""
+        if self._provider_probe is None:
+            self._provider_probe = await self._probe_providers_once()
+        return self._provider_probe
+
+    async def _probe_providers_once(self) -> dict[str, Any]:
+        probe: dict[str, Any] = {
+            "embedding": {
+                "available": self._embedding_provider is not None,
+                "provider_id": str(self.config.get("embedding_provider_id") or ""),
+            },
+            "reranker": {
+                "available": self._reranker_provider is not None,
+                "provider_id": str(self.config.get("reranker_provider_id") or ""),
+            },
+        }
+        if self._embedding_provider is not None:
+            try:
+                vector = await self._embedding_provider.get_embedding("维度探测")
+                probe["embedding"]["dim"] = len(vector)
+            except Exception as exc:  # noqa: BLE001 - probe must not crash stats
+                probe["embedding"]["available"] = False
+                probe["embedding"]["error"] = str(exc)[:200]
+        if self._reranker_provider is not None:
+            try:
+                await self._reranker_provider.rerank("能力探测", ["测试", "文档"], top_n=2)
+                probe["reranker"]["ok"] = True
+            except Exception as exc:  # noqa: BLE001
+                probe["reranker"]["ok"] = False
+                probe["reranker"]["error"] = str(exc)[:200]
+        return probe
 
     async def _llm_provider(self) -> Any | None:
         provider_id = str(self.config.get("llm_provider_id") or "").strip()

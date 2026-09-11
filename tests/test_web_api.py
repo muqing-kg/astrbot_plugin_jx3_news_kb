@@ -36,6 +36,12 @@ class FakePlugin:
     async def extract_and_schedule(self) -> int:
         return 0
 
+    async def probe_providers(self) -> dict[str, Any]:
+        return {
+            "embedding": {"available": False, "provider_id": ""},
+            "reranker": {"available": False, "provider_id": ""},
+        }
+
 
 def _insert_announcement(
     plugin: FakePlugin, title="版本更新公告", url="https://example.com/a"

@@ -58,12 +58,17 @@ function setupTabs() {
 /* ---------- overview ---------- */
 function renderStats(data) {
   const counts = data.counts || {};
+  const providers = data.providers || {};
+  const embedding = providers.embedding || {};
+  const reranker = providers.reranker || {};
   const cards = [
     ["公告总数", counts.announcements],
     ["文本分块", counts.chunks],
     ["向量数", counts.embeddings],
     ["活动抽取", counts.activities],
     ["待发提醒", data.pending_reminders],
+    ["Embedding 维度", embedding.available ? (embedding.dim ?? "探测中") : "未启用"],
+    ["Reranker", reranker.available ? "已启用" : "未启用"],
   ];
   $("stat-cards").innerHTML = cards
     .map(
@@ -100,7 +105,7 @@ function renderStats(data) {
 }
 
 async function loadStats() {
-  const data = await callApi(() => bridge.apiGet("stats"), $("action-result"));
+  const data = await callApi(() => bridge.apiGet("stats"), null);
   if (data) renderStats(data);
 }
 
@@ -293,7 +298,7 @@ async function loadActivities() {
             </div>
             ${item.explanation ? `<div>${escapeHtml(item.explanation)}</div>` : ""}
             <div class="muted">来源：${escapeHtml(item.announcement_date)}《<a href="${escapeHtml(item.url)}" target="_blank" rel="noreferrer">${escapeHtml(item.announcement_title)}</a>》</div>
-            <button class="danger-btn" data-act-del="${item.id}">彻底删除该条提醒</button>
+            <button class="danger-btn" data-act-del="${item.id}">删除</button>
           </div>`,
         )
         .join("")
