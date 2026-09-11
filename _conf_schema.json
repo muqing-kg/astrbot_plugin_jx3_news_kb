@@ -1,0 +1,104 @@
+{
+  "api_base_url": {
+    "description": "JX3API 基础地址",
+    "type": "string",
+    "default": "https://www.jx3api.com"
+  },
+  "news_records_path": {
+    "description": "公告列表接口路径",
+    "type": "string",
+    "default": "/news/records"
+  },
+  "api_token": {
+    "description": "JX3API Token（可选）",
+    "type": "string",
+    "default": "",
+    "secret": true
+  },
+  "initial_fetch_limit": {
+    "description": "首次安装（数据库为空）时抓取的公告条数",
+    "type": "int",
+    "default": 50
+  },
+  "daily_fetch_limit": {
+    "description": "每日自动抓取的公告条数",
+    "type": "int",
+    "default": 10
+  },
+  "daily_fetch_time": {
+    "description": "每日自动抓取时间（HH:MM）",
+    "type": "string",
+    "default": "00:00"
+  },
+  "catchup_fetch_limit": {
+    "description": "停机补抓（超过36小时未抓取）时抓取的条数",
+    "type": "int",
+    "default": 50
+  },
+  "timezone": {
+    "description": "时区，用于每日任务和提醒时间计算",
+    "type": "string",
+    "default": "Asia/Shanghai"
+  },
+  "whitelist_groups": {
+    "description": "群白名单（群号列表，留空表示所有群可用；问答与提醒共用）",
+    "type": "list",
+    "default": []
+  },
+  "whitelist_users": {
+    "description": "私聊白名单（用户号列表，留空表示所有私聊可用；问答与提醒共用）",
+    "type": "list",
+    "default": []
+  },
+  "allow_group": {
+    "description": "是否在群聊中启用问答",
+    "type": "bool",
+    "default": true
+  },
+  "allow_private": {
+    "description": "是否在私聊中启用问答",
+    "type": "bool",
+    "default": true
+  },
+  "llm_provider_id": {
+    "description": "用于问答与活动抽取的 LLM 提供商（留空使用默认提供商）",
+    "type": "string",
+    "default": "",
+    "_special": "select_provider"
+  },
+  "llm_model": {
+    "description": "指定 LLM 模型名（留空使用提供商默认模型）",
+    "type": "string",
+    "default": ""
+  },
+  "embedding_provider_id": {
+    "description": "向量召回使用的 Embedding 提供商 ID（留空则只用全文检索）",
+    "type": "string",
+    "default": ""
+  },
+  "reranker_provider_id": {
+    "description": "重排序使用的 Reranker 提供商 ID（留空或失败时自动降级）",
+    "type": "string",
+    "default": ""
+  },
+  "reminder_enabled": {
+    "description": "是否启用活动到期提醒",
+    "type": "bool",
+    "default": true
+  },
+  "reminder_days_before": {
+    "description": "提前几天提醒（0 表示当天提醒）",
+    "type": "int",
+    "default": 1
+  },
+  "reminder_send_time": {
+    "description": "提醒发送时间（HH:MM）",
+    "type": "string",
+    "default": "10:00"
+  },
+  "reminder_platform_id": {
+    "description": "提醒发送使用的平台适配器 ID（留空自动选择第一个非 webchat 平台）",
+    "type": "string",
+    "default": ""
+  }
+}
