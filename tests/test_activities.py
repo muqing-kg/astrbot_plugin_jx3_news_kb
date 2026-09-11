@@ -11,6 +11,23 @@ from core.activities import (
     is_reminder_worthy,
     parse_local_datetime,
 )
+from core.qa import clean_markdown
+
+
+def test_clean_markdown_strips_headings_bold_and_code():
+    raw = (
+        "### 一、联动活动\n"
+        "1. **渡厄问心**：参与活动\n"
+        "2. 联动签到`第一期`\n"
+        "**来源：2026-09-10 版本更新公告**"
+    )
+    cleaned = clean_markdown(raw)
+    assert "###" not in cleaned
+    assert "**" not in cleaned
+    assert "`" not in cleaned
+    assert "一、联动活动" in cleaned
+    assert "渡厄问心：参与活动" in cleaned
+    assert "联动签到第一期" in cleaned
 
 
 def test_free_coupon_with_discount_mention_in_evidence_is_kept():

@@ -25,8 +25,9 @@ ANSWER_SYSTEM_PROMPT = """你是剑网3官方公告知识库助手。
 严格依据用户消息后面的“公告资料”回答，禁止编造。
 默认以最新公告为准；如果资料中存在冲突，明确说明最新公告日期。
 只有用户询问“是否改过”“以前怎样”“历史变化”时，才比较新旧公告。
-回答使用简体中文，直接、准确、可操作，不超过指定字数。
-关键结论后用括号标注来源：公告日期 + 标题。
+回答使用简体中文纯文本，直接、准确、可操作，不超过指定字数。
+禁止使用任何 Markdown 符号（#、*、`、表格等），聊天窗口按纯文本显示。
+关键结论后用括号标注来源：公告日期 + 标题；多条结论来自同一篇公告时，只在回答末尾统一标注一次，不要每条重复。
 如果资料不足，明确说“现有公告资料中没有找到”。
 """
 
@@ -47,6 +48,16 @@ def extract_json_object(text: str) -> dict[str, Any] | None:
         return value if isinstance(value, dict) else None
     except json.JSONDecodeError:
         return None
+
+
+_MD_HEADING_RE = re.compile(r"^\s{0,3}#{1,6}\s*", re.MULTILINE)
+
+
+def clean_markdown(text: str) -> str:
+    """Strip raw Markdown markers that would show up verbatim in chat messages."""
+    text = _MD_HEADING_RE.sub("", text or "")
+    text = text.replace("**", "").replace("`", "")
+    return text.strip()
 
 
 class QAService:
@@ -129,7 +140,7 @@ class QAService:
                 ),
                 system_prompt=ANSWER_SYSTEM_PROMPT
             )
-            return True, str(getattr(response, "completion_text", "") or "")
+            return True, clean_markdown(str(getattr(response, "completion_text", "") or ""))
 
         context_parts: list[str] = []
         for index, item in enumerate(results, start=1):
@@ -156,7 +167,7 @@ class QAService:
             ),
             system_prompt=ANSWER_SYSTEM_PROMPT,
         )
-        return True, str(getattr(response, "completion_text", "") or "")
+        return True, clean_markdown(str(getattr(response, "completion_text", "") or ""))
 
     def _fallback_answer(self, results: list[dict[str, Any]]) -> str:
         lines = ["根据现有公告资料，相关内容如下："]
