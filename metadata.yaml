@@ -2,4 +2,4 @@ name: astrbot_plugin_jx3_news_kb
 display_name: 剑网3新闻公告知识库
 description: "抓取 JX3API 公告新闻，提供混合检索问答、活动到期提醒和 WebUI 管理。"
 author: muqing
-version: 1.0.6
+version: 1.0.7

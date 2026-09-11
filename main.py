@@ -340,8 +340,13 @@ class JX3NewsKBPlugin(Star):
 
     @filter.event_message_type(filter.EventMessageType.ALL)
     async def on_message(self, event: AstrMessageEvent):
-        """Answer awakened messages that ask about JX3 announcements."""
-        if not event.is_wake:
+        """Answer awakened messages that ask about JX3 announcements.
+
+        ``is_wake`` is forced to True for every message matched by this plugin's
+        event listener; ``is_at_or_wake_command`` only reflects a real wake
+        (wake prefix, @bot, reply-to-bot or private chat).
+        """
+        if not getattr(event, "is_at_or_wake_command", False):
             return
         question = (event.message_str or "").strip()
         if not question or not self._session_allowed(event):

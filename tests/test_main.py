@@ -112,8 +112,15 @@ class FakeContext:
 
 
 class FakeEvent:
-    def __init__(self, is_wake=True, group_id="", sender_id="10086", message_str="新活动"):
-        self.is_wake = is_wake
+    def __init__(
+        self,
+        is_at_or_wake_command=True,
+        group_id="",
+        sender_id="10086",
+        message_str="新活动",
+    ):
+        self.is_wake = True  # AstrBot forces this True for plugin listeners
+        self.is_at_or_wake_command = is_at_or_wake_command
         self.message_str = message_str
         self.unified_msg_origin = "fake:GroupMessage:10001"
         self._group_id = group_id
@@ -150,7 +157,7 @@ def test_plugin_registers_all_routes(monkeypatch, tmp_path):
     assert "/astrbot_plugin_jx3_news_kb/activities/<activity_id>/delete" in routes
 
 
-def test_message_requires_wake(monkeypatch, tmp_path):
+def test_message_requires_real_wake(monkeypatch, tmp_path):
     main_module, plugin, _ = _make_plugin(monkeypatch, tmp_path)
     called = []
 
@@ -163,12 +170,14 @@ def test_message_requires_wake(monkeypatch, tmp_path):
     async def consume(event):
         return [item async for item in plugin.on_message(event)]
 
-    outputs = asyncio.run(consume(FakeEvent(is_wake=False)))
-    assert outputs == []
+    # AstrBot forces is_wake=True for plugin listeners, but plain group chat
+    # that never woke the bot must stay silent.
+    unwoke = asyncio.run(consume(FakeEvent(is_at_or_wake_command=False, group_id="10001")))
+    assert unwoke == []
     assert called == []
 
-    outputs = asyncio.run(consume(FakeEvent(is_wake=True)))
-    assert outputs == ["plain:answer"]
+    woke = asyncio.run(consume(FakeEvent(is_at_or_wake_command=True, group_id="10001")))
+    assert woke == ["plain:answer"]
     assert called == ["新活动"]
 
 

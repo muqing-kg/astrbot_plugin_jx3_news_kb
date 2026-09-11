@@ -22,7 +22,7 @@ Build an AstrBot plugin that ingests JX3API news and announcements into a local 
 - `whitelist_groups` controls group chats; `whitelist_users` controls private chats.
 - `allow_group` and `allow_private` are independent switches.
 - The plugin has no chat commands.
-- Plugin message handling only runs after AstrBot wake: `event.is_wake` must be true.
+- Plugin message handling only runs after a real wake: `event.is_at_or_wake_command` must be true. (`event.is_wake` is forced to True for every message matched by a plugin event listener and cannot be used here.)
 - A lightweight LLM relevance check suppresses unrelated awakened messages unless no LLM is available; in that case, retrieval may run directly.
 
 ### Retrieval and Answers
