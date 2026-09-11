@@ -23,6 +23,25 @@ SHORT_WINDOW_REMIND_BEFORE = timedelta(minutes=30)
 # A scheduled slot reached within this grace period is still dispatched by the
 # reminder loop; only older slots are treated as expired and dropped.
 DISPATCH_GRACE = timedelta(hours=6)
+# Fetch and reminder logs older than this are pruned by the daily job.
+LOG_RETENTION_DAYS = 7
+
+REMINDER_HEADER = "【剑网3到期提醒】"
+
+
+def merge_reminder_texts(texts: list[str]) -> str:
+    """Combine several reminder messages for one target into a single message."""
+    if len(texts) <= 1:
+        return texts[0] if texts else ""
+    sections = []
+    for text in texts:
+        body = text
+        if body.startswith(REMINDER_HEADER):
+            body = body[len(REMINDER_HEADER):]
+        sections.append(body.strip())
+    return f"{REMINDER_HEADER}今日共 {len(sections)} 项到期：\n\n" + "\n\n———\n\n".join(
+        sections
+    )
 
 
 @dataclass(slots=True)
@@ -373,6 +392,24 @@ class SchedulerService:
             moment += timedelta(days=1)
         return moment.isoformat(timespec="seconds")
 
+    def prune_logs(self, retention_days: int = LOG_RETENTION_DAYS) -> dict[str, int]:
+        """Drop fetch/reminder logs older than the retention window."""
+        cutoff = (self.now() - timedelta(days=retention_days)).isoformat(
+            timespec="seconds"
+        )
+        with self.db.connect() as conn:
+            fetch = int(
+                conn.execute(
+                    "DELETE FROM fetch_logs WHERE started_at < ?", (cutoff,)
+                ).rowcount
+            )
+            reminder = int(
+                conn.execute(
+                    "DELETE FROM reminder_logs WHERE sent_at < ?", (cutoff,)
+                ).rowcount
+            )
+        return {"fetch_logs": fetch, "reminder_logs": reminder}
+
     def status_snapshot(self, daily_fetch_time: str) -> dict[str, Any]:
         with self.db.connect() as conn:
             last = conn.execute(
@@ -392,6 +429,8 @@ class SchedulerService:
 __all__ = [
     "CATCHUP_THRESHOLD",
     "DISPATCH_GRACE",
+    "LOG_RETENTION_DAYS",
+    "REMINDER_HEADER",
     "SHORT_WINDOW",
     "SHORT_WINDOW_REMIND_BEFORE",
     "MESSAGE_TYPE_TO_SCOPE",
@@ -399,5 +438,6 @@ __all__ = [
     "SchedulerService",
     "extract_session_id",
     "format_deadline",
+    "merge_reminder_texts",
     "parse_session_address",
 ]

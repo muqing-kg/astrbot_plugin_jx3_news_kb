@@ -353,6 +353,73 @@ def test_cancel_reminders_for_announcement(tmp_path):
     assert cancelled == 2
 
 
+def test_merge_reminder_texts_combines_same_day_items():
+    from core.scheduler import REMINDER_HEADER, merge_reminder_texts
+
+    single = f"{REMINDER_HEADER}\n活动：A\n截止：2026-09-17 07:00"
+    assert merge_reminder_texts([single]) == single
+
+    merged = merge_reminder_texts(
+        [
+            f"{REMINDER_HEADER}\n活动：A\n截止：2026-09-17 07:00",
+            f"{REMINDER_HEADER}\n活动：B\n截止：2026-09-17 07:00",
+        ]
+    )
+    assert merged.startswith(f"{REMINDER_HEADER}今日共 2 项到期：")
+    assert "活动：A" in merged
+    assert "活动：B" in merged
+    assert merged.count(REMINDER_HEADER) == 1
+
+
+def test_prune_logs_keeps_recent_only(tmp_path):
+    scheduler = _make_scheduler(tmp_path)
+    announcement_id = _insert_announcement(scheduler.db)
+    activity_id = _insert_activity(
+        scheduler.db, announcement_id, end_time="2099-09-17T07:00:00+08:00"
+    )
+    with scheduler.db.connect() as conn:
+        cursor = conn.execute(
+            """
+            INSERT INTO reminders(
+                activity_id, target_type, target_id, scheduled_at, message_text
+            ) VALUES (?, 'group', 'fake:GroupMessage:10001',
+                      '2026-01-01T10:00:00+08:00', 'text')
+            """,
+            (activity_id,),
+        )
+        reminder_id = cursor.lastrowid
+        conn.execute(
+            """
+            INSERT INTO fetch_logs(started_at, finished_at, success, fetch_limit)
+            VALUES (datetime('now', 'localtime', '-10 days'),
+                    datetime('now', 'localtime', '-10 days'), 1, 10)
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO fetch_logs(started_at, finished_at, success, fetch_limit)
+            VALUES (datetime('now', 'localtime'), datetime('now', 'localtime'), 1, 10)
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO reminder_logs(
+                reminder_id, activity_name, target_type, target_id,
+                scheduled_at, sent_at, success
+            ) VALUES (?, 'a', 'group', '1', '2026-01-01',
+                      datetime('now', 'localtime', '-10 days'), 1)
+            """,
+            (reminder_id,),
+        )
+
+    pruned = scheduler.prune_logs()
+    assert pruned == {"fetch_logs": 1, "reminder_logs": 1}
+
+    with scheduler.db.connect() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM fetch_logs").fetchone()[0] == 1
+        assert conn.execute("SELECT COUNT(*) FROM reminder_logs").fetchone()[0] == 0
+
+
 def test_status_snapshot_next_run(tmp_path):
     scheduler = _make_scheduler(tmp_path)
     snapshot = scheduler.status_snapshot("00:00")

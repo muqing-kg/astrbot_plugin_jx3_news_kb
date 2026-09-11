@@ -159,11 +159,20 @@ async def handle_announcement_detail(
                 (announcement_id_int,),
             ).fetchone()[0]
         )
+        chunks = conn.execute(
+            """
+            SELECT chunk_index, content, embedding_updated_at
+            FROM chunks WHERE announcement_id = ?
+            ORDER BY chunk_index
+            """,
+            (announcement_id_int,),
+        ).fetchall()
     detail = dict(row)
     detail["raw_json"] = _parse_raw_json(detail.get("raw_json"))
     return {
         "announcement": detail,
         "revisions": [dict(item) for item in revisions],
+        "chunks": [dict(item) for item in chunks],
         "chunk_count": chunk_count,
     }
 

@@ -258,6 +258,55 @@ def test_send_due_reminders_marks_sent(monkeypatch, tmp_path):
     assert status == "sent"
 
 
+def test_send_due_reminders_merges_same_target(monkeypatch, tmp_path):
+    main_module, plugin, context = _make_plugin(monkeypatch, tmp_path)
+    with plugin.db.connect() as conn:
+        cursor = conn.execute(
+            """
+            INSERT INTO announcements(
+                source_id, title, type, url, content_text, raw_json,
+                content_hash, published_at, updated_at_source
+            ) VALUES ('1', 't', 'g', 'u', 'c', '{}', 'h',
+                      '2026-08-13T10:00:00+08:00', '2026-08-13T10:00:00+08:00')
+            """
+        )
+        announcement_id = cursor.lastrowid
+        for name in ("活动A", "活动B"):
+            cursor = conn.execute(
+                """
+                INSERT INTO activities(
+                    announcement_id, name, action, category, end_time
+                ) VALUES (?, ?, '使用', 'free_coupon',
+                          '2099-09-17T07:00:00+08:00')
+                """,
+                (announcement_id, name),
+            )
+            conn.execute(
+                """
+                INSERT INTO reminders(
+                    activity_id, target_type, target_id, scheduled_at, message_text
+                ) VALUES (?, 'group', 'fake:GroupMessage:10001',
+                          datetime('now', 'localtime', '-1 minute'), ?)
+                """,
+                (cursor.lastrowid, f"【剑网3到期提醒】\n活动：{name}"),
+            )
+
+    sent = asyncio.run(plugin.send_due_reminders())
+    assert sent == 2
+    # One combined message per target instead of one message per reminder.
+    assert len(context.sent) == 1
+    _, chain = context.sent[0]
+    assert "今日共 2 项到期" in chain.parts[0]
+    assert "活动：活动A" in chain.parts[0]
+    assert "活动：活动B" in chain.parts[0]
+
+    with plugin.db.connect() as conn:
+        statuses = [
+            row[0] for row in conn.execute("SELECT status FROM reminders").fetchall()
+        ]
+    assert statuses == ["sent", "sent"]
+
+
 class _StubClient:
     async def fetch(self, limit: int):
         return []

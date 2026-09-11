@@ -114,26 +114,41 @@ function setupActions() {
   $("btn-fetch-10").addEventListener("click", () => runFetch(10));
   $("btn-fetch-50").addEventListener("click", () => runFetch(50));
   $("btn-rebuild-fts").addEventListener("click", async () => {
-    await callApi(
+    const result = await callApi(
       () => bridge.apiPost("rebuild/fts", {}),
       $("action-result"),
     );
+    if (result) {
+      showInfo($("action-result"), `全文索引已重建，共 ${result.chunks} 个分块。`);
+    }
     loadStats();
   });
   $("btn-rebuild-emb").addEventListener("click", async () => {
-    await callApi(
+    const result = await callApi(
       () => bridge.apiPost("rebuild/embeddings", {}),
       $("action-result"),
     );
+    if (result) {
+      showInfo(
+        $("action-result"),
+        `已清理 ${result.cleared} 条旧向量，重新生成 ${result.indexed} 条。`,
+      );
+    }
     loadStats();
   });
 }
 
 async function runFetch(limit) {
-  await callApi(
+  const result = await callApi(
     () => bridge.apiPost("fetch", { limit }),
     $("action-result"),
   );
+  if (result) {
+    showInfo(
+      $("action-result"),
+      `抓取完成：返回 ${result.returned} 条，入库 ${result.inserted} 条，修订 ${result.revised} 条，跳过 ${result.skipped} 条。`,
+    );
+  }
   loadStats();
 }
 
@@ -228,6 +243,21 @@ async function openDetail(id) {
 
   $("detail-content").textContent = announcement.content_text || "（无正文）";
   $("detail-raw").textContent = JSON.stringify(announcement.raw_json, null, 2);
+
+  const chunks = data.chunks || [];
+  $("detail-chunk-count").textContent = chunks.length;
+  $("detail-chunks").innerHTML = chunks.length
+    ? chunks
+        .map(
+          (chunk) => `
+          <div class="chunk-item">
+            <div class="muted">分块 #${chunk.chunk_index + 1}${chunk.embedding_updated_at ? ` · 向量生成于 ${fmtDateTime(chunk.embedding_updated_at)}` : " · 无向量"}</div>
+            <pre class="content">${escapeHtml(chunk.content)}</pre>
+          </div>`,
+        )
+        .join("")
+    : '<div class="muted">没有分块。</div>';
+
   const revisions = data.revisions || [];
   $("detail-revisions").innerHTML = revisions.length
     ? `<table class="data-table"><thead><tr><th>#</th><th>标题</th><th>源站更新时间</th><th>内容指纹</th></tr></thead><tbody>${
@@ -286,19 +316,21 @@ async function loadActivities() {
         .map(
           (item) => `
           <div class="reminder-item">
-            <span class="name">${escapeHtml(item.name)}</span>
-            <span class="tag">${escapeHtml(item.category)}</span>
-            ${item.pending_reminders > 0 ? `<span class="tag status-pending">待发提醒 ${item.pending_reminders}</span>` : ""}
+            <div class="item-head">
+              <span class="name">${escapeHtml(item.name)}</span>
+              <span class="tag">${escapeHtml(item.category)}</span>
+              ${item.pending_reminders > 0 ? `<span class="tag status-pending">待发提醒 ${item.pending_reminders}</span>` : ""}
+              <button class="danger-btn" data-act-del="${item.id}">删除</button>
+            </div>
             <div class="muted">
               待办：${escapeHtml(item.action || "—")}
-              · 开始：${fmtDateTime(item.start_time)}
-              · 截止：${fmtDateTime(item.end_time)}
-              · 券/道具消失：${fmtDateTime(item.item_expiry)}
+              · 开始：<span class="hl">${fmtDateTime(item.start_time)}</span>
+              · 截止：<span class="hl">${fmtDateTime(item.end_time)}</span>
+              · 券/道具消失：<span class="hl">${fmtDateTime(item.item_expiry)}</span>
               ${item.item_name ? `· 物品：${escapeHtml(item.item_name)}` : ""}
             </div>
             ${item.explanation ? `<div>${escapeHtml(item.explanation)}</div>` : ""}
             <div class="muted">来源：${escapeHtml(item.announcement_date)}《<a href="${escapeHtml(item.url)}" target="_blank" rel="noreferrer">${escapeHtml(item.announcement_title)}</a>》</div>
-            <button class="danger-btn" data-act-del="${item.id}">删除</button>
           </div>`,
         )
         .join("")
@@ -352,7 +384,7 @@ function escapeHtml(value) {
 
 async function main() {
   await bridge.ready();
-  document.title = bridge.t("pages.jx3-news.title", "剑网3公告知识库");
+  document.title = bridge.t("pages.jx3-news.title", "剑网3新闻公告知识库");
   setupTabs();
   setupActions();
   setupAnnouncements();

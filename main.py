@@ -26,6 +26,7 @@ try:
         ReminderTargets,
         SchedulerService,
         extract_session_id,
+        merge_reminder_texts,
     )
     from .web_api.routes import ROUTE_TABLE
 except ImportError:  # imported as a top-level module (tests, direct run)
@@ -39,6 +40,7 @@ except ImportError:  # imported as a top-level module (tests, direct run)
         ReminderTargets,
         SchedulerService,
         extract_session_id,
+        merge_reminder_texts,
     )
     from web_api.routes import ROUTE_TABLE
 
@@ -237,6 +239,7 @@ class JX3NewsKBPlugin(Star):
 
     async def daily_job(self) -> dict[str, Any]:
         result = await self.fetch_and_ingest()
+        self.scheduler.prune_logs()
         if result.get("success"):
             await self.extract_and_schedule()
         return result
@@ -252,18 +255,23 @@ class JX3NewsKBPlugin(Star):
             return False, str(exc)
 
     async def send_due_reminders(self) -> int:
+        """Dispatch due reminders; several due for one target merge into one message."""
         if not bool(self.config.get("reminder_enabled", True)):
             return 0
+        groups: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        for reminder in self.scheduler.due_reminders(500):
+            key = (reminder["target_type"], reminder["target_id"])
+            groups.setdefault(key, []).append(reminder)
+
         sent = 0
-        for reminder in self.scheduler.due_reminders():
-            ok, error = await self._send_text(
-                reminder["target_type"], reminder["target_id"], reminder["message_text"]
-            )
-            self.scheduler.mark_reminder(
-                int(reminder["id"]), "sent" if ok else "failed", error
-            )
+        for (target_type, target_id), items in groups.items():
+            text = merge_reminder_texts([item["message_text"] for item in items])
+            ok, error = await self._send_text(target_type, target_id, text)
+            status = "sent" if ok else "failed"
+            for item in items:
+                self.scheduler.mark_reminder(int(item["id"]), status, error)
             if ok:
-                sent += 1
+                sent += len(items)
         return sent
 
     # ---------- background loops ----------

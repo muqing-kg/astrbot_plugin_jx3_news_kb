@@ -163,6 +163,15 @@ input[type="search"], input[type="text"], select {
   padding: 8px 12px;
   margin-bottom: 8px;
 }
+.item-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.item-head button { margin-left: auto; }
+.hl { color: var(--primary); font-weight: 600; }
+.chunk-item { margin-bottom: 10px; }
 .activity-item .name { font-weight: 600; }
 .tag {
   display: inline-block;

@@ -130,6 +130,8 @@ def test_detail_includes_revisions_activities_reminders(plugin):
     assert data["announcement"]["title"] == "版本更新公告"
     assert data["announcement"]["raw_json"]["desc"]["id"] == "1"
     assert data["chunk_count"] == 1
+    assert data["chunks"][0]["chunk_index"] == 0
+    assert "正文内容" in data["chunks"][0]["content"]
     assert "activities" not in data
     assert "reminders" not in data
 
