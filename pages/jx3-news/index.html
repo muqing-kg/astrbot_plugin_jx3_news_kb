@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>剑网3公告知识库</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <header class="page-header">
+      <h1>剑网3公告知识库</h1>
+      <p class="subtitle">抓取 JX3API 官方公告与新闻，支持问答、活动到期提醒和数据管理。</p>
+    </header>
+
+    <nav class="tabs" id="tabs">
+      <button class="tab active" data-tab="overview">总览</button>
+      <button class="tab" data-tab="announcements">公告管理</button>
+      <button class="tab" data-tab="reminders">到期提醒</button>
+      <button class="tab" data-tab="logs">抓取日志</button>
+    </nav>
+
+    <main>
+      <!-- 总览 -->
+      <section id="panel-overview" class="panel active">
+        <div class="cards" id="stat-cards"></div>
+
+        <div class="card">
+          <h2>最近抓取</h2>
+          <div id="last-fetch" class="muted">加载中…</div>
+        </div>
+
+        <div class="card">
+          <h2>手动操作</h2>
+          <div class="toolbar">
+            <button id="btn-fetch-1">抓取 1 条</button>
+            <button id="btn-fetch-10">抓取 10 条</button>
+            <button id="btn-fetch-50" class="secondary">补抓最近 50 条</button>
+            <button id="btn-rebuild-fts" class="secondary">重建全文索引</button>
+            <button id="btn-rebuild-emb" class="secondary">重建 Embedding</button>
+          </div>
+          <p class="hint">日常抓取由插件每日自动执行；手动按钮用于首次安装或异常兜底。</p>
+          <div id="action-result" class="action-result" hidden></div>
+        </div>
+
+        <div class="card">
+          <h2>最近待发提醒</h2>
+          <div id="upcoming-reminders"></div>
+        </div>
+      </section>
+
+      <!-- 公告管理 -->
+      <section id="panel-announcements" class="panel">
+        <div class="card">
+          <div class="toolbar">
+            <input id="ann-search" type="search" placeholder="搜索标题或正文…" />
+            <select id="ann-type">
+              <option value="">全部类型</option>
+            </select>
+            <button id="btn-ann-search">搜索</button>
+          </div>
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>日期</th><th>类型</th><th>标题</th><th>活动</th><th>操作</th>
+              </tr>
+            </thead>
+            <tbody id="ann-tbody"></tbody>
+          </table>
+          <div class="pager">
+            <button id="ann-prev">上一页</button>
+            <span id="ann-page-info"></span>
+            <button id="ann-next">下一页</button>
+          </div>
+        </div>
+
+        <div class="card" id="ann-detail" hidden>
+          <div class="detail-head">
+            <h2 id="detail-title"></h2>
+            <button id="btn-detail-close" class="secondary">关闭</button>
+          </div>
+          <div id="detail-meta" class="meta"></div>
+          <div id="detail-activities"></div>
+          <div id="detail-reminders"></div>
+          <h3>清洗后正文</h3>
+          <pre id="detail-content" class="content"></pre>
+          <details>
+            <summary>原始 JSON 数据</summary>
+            <pre id="detail-raw" class="content"></pre>
+          </details>
+          <details>
+            <summary>修订历史</summary>
+            <div id="detail-revisions"></div>
+          </details>
+
+          <!-- 两步无弹窗删除确认 -->
+          <div class="delete-zone" id="delete-zone">
+            <h3>彻底删除</h3>
+            <p class="hint danger">
+              彻底删除会移除公告正文、全部分块、向量、活动抽取、待发提醒和日志，
+              并写入指纹墓碑防止补抓恢复。删除后不可恢复。
+            </p>
+            <label class="check-line">
+              <input type="checkbox" id="del-check" />
+              我确认要彻底删除该公告及所有关联数据
+            </label>
+            <input id="del-input" type="text" placeholder='输入 DELETE 后才能执行' disabled />
+            <button id="btn-del" class="danger-btn" disabled>执行彻底删除</button>
+            <div id="del-result" class="action-result" hidden></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 到期提醒 -->
+      <section id="panel-reminders" class="panel">
+        <div class="card">
+          <div class="toolbar">
+            <select id="rem-status">
+              <option value="pending">待发送</option>
+              <option value="sent">已发送</option>
+              <option value="failed">发送失败</option>
+              <option value="cancelled">已取消</option>
+              <option value="all">全部</option>
+            </select>
+            <button id="btn-rem-refresh">刷新</button>
+          </div>
+          <div id="rem-list"></div>
+        </div>
+      </section>
+
+      <!-- 抓取日志 -->
+      <section id="panel-logs" class="panel">
+        <div class="card">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>开始</th><th>结束</th><th>结果</th><th>条数</th>
+                <th>返回</th><th>入库</th><th>修订</th><th>跳过</th><th>错误</th>
+              </tr>
+            </thead>
+            <tbody id="log-tbody"></tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

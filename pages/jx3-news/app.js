@@ -1,0 +1,400 @@
+/* JX3 news knowledge base Plugin Page. */
+const bridge = window.AstrBotPluginPage;
+
+const state = {
+  announcements: { page: 1, pageSize: 20, total: 0, q: "", type: "" },
+  currentAnnouncementId: null,
+};
+
+const $ = (id) => document.getElementById(id);
+
+function fmtDateTime(value) {
+  if (!value) return "—";
+  const text = String(value).replace("T", " ");
+  return text.slice(0, 16);
+}
+
+function showError(outputEl, error) {
+  outputEl.hidden = false;
+  outputEl.classList.add("error");
+  outputEl.textContent = `操作失败：${error.message || error}`;
+}
+
+function showInfo(outputEl, message) {
+  outputEl.hidden = false;
+  outputEl.classList.remove("error");
+  outputEl.textContent = message;
+}
+
+async function callApi(fn, outputEl) {
+  try {
+    const result = await fn();
+    if (outputEl) {
+      showInfo(outputEl, typeof result === "string" ? result : JSON.stringify(result, null, 2));
+    }
+    return result;
+  } catch (error) {
+    if (outputEl) showError(outputEl, error);
+    return null;
+  }
+}
+
+/* ---------- tabs ---------- */
+function setupTabs() {
+  $("tabs").addEventListener("click", (event) => {
+    const tab = event.target.closest(".tab");
+    if (!tab) return;
+    document.querySelectorAll(".tab").forEach((item) =>
+      item.classList.toggle("active", item === tab),
+    );
+    document.querySelectorAll(".panel").forEach((panel) =>
+      panel.classList.toggle("active", panel.id === `panel-${tab.dataset.tab}`),
+    );
+    if (tab.dataset.tab === "logs") loadLogs();
+    if (tab.dataset.tab === "reminders") loadReminders();
+  });
+}
+
+/* ---------- overview ---------- */
+function renderStats(data) {
+  const counts = data.counts || {};
+  const cards = [
+    ["公告总数", counts.announcements],
+    ["文本分块", counts.chunks],
+    ["向量数", counts.embeddings],
+    ["活动抽取", counts.activities],
+    ["待发提醒", data.pending_reminders],
+  ];
+  $("stat-cards").innerHTML = cards
+    .map(
+      ([label, value]) =>
+        `<div class="stat-card"><div class="num">${value ?? 0}</div><div class="label">${label}</div></div>`,
+    )
+    .join("");
+
+  const last = data.last_fetch;
+  $("last-fetch").innerHTML = last
+    ? [
+        `开始：${fmtDateTime(last.started_at)}`,
+        `结果：${Number(last.success) === 1 ? "成功" : "失败"}`,
+        `抓取条数：${last.fetch_limit}，入库 ${last.inserted_count}，修订 ${last.revised_count}，跳过 ${last.skipped_count}`,
+        last.error ? `错误：${last.error}` : "",
+      ]
+        .filter(Boolean)
+        .join("<br />")
+    : "还没有抓取记录。首次安装后可点击“补抓最近 50 条”建立初始知识库。";
+
+  const upcoming = data.upcoming_reminders || [];
+  $("upcoming-reminders").innerHTML = upcoming.length
+    ? upcoming
+        .map(
+          (item) => `
+            <div class="reminder-item">
+              <span class="name">${escapeHtml(item.name)}</span>
+              <span class="tag">${escapeHtml(item.target_type)}:${escapeHtml(item.target_id)}</span>
+              <div class="muted">计划发送：${fmtDateTime(item.scheduled_at)}　来源：${escapeHtml(item.announcement_title || "")}</div>
+            </div>`,
+        )
+        .join("")
+    : '<div class="muted">暂无待发提醒。</div>';
+}
+
+async function loadStats() {
+  const data = await callApi(() => bridge.apiGet("stats"), $("action-result"));
+  if (data) renderStats(data);
+}
+
+function setupActions() {
+  $("btn-fetch-1").addEventListener("click", () => runFetch(1));
+  $("btn-fetch-10").addEventListener("click", () => runFetch(10));
+  $("btn-fetch-50").addEventListener("click", () => runFetch(50));
+  $("btn-rebuild-fts").addEventListener("click", async () => {
+    await callApi(
+      () => bridge.apiPost("rebuild/fts", {}),
+      $("action-result"),
+    );
+    loadStats();
+  });
+  $("btn-rebuild-emb").addEventListener("click", async () => {
+    await callApi(
+      () => bridge.apiPost("rebuild/embeddings", {}),
+      $("action-result"),
+    );
+    loadStats();
+  });
+}
+
+async function runFetch(limit) {
+  await callApi(
+    () => bridge.apiPost("fetch", { limit }),
+    $("action-result"),
+  );
+  loadStats();
+}
+
+/* ---------- announcements ---------- */
+async function loadAnnouncements() {
+  const { page, pageSize, q, type } = state.announcements;
+  const data = await callApi(
+    () => bridge.apiGet("announcements", { page, page_size: pageSize, q, type }),
+    null,
+  );
+  if (!data) return;
+  state.announcements.total = data.total;
+
+  const typeSelect = $("ann-type");
+  if (typeSelect.options.length <= 1) {
+    for (const name of data.types || []) {
+      typeSelect.add(new Option(name, name));
+    }
+  }
+
+  $("ann-tbody").innerHTML = (data.items || [])
+    .map(
+      (item) => `
+        <tr>
+          <td>${escapeHtml(fmtDateTime(item.announcement_date))}</td>
+          <td>${escapeHtml(item.type || "")}</td>
+          <td class="wrap"><a href="${escapeHtml(item.url)}" target="_blank" rel="noreferrer">${escapeHtml(item.title)}</a></td>
+          <td>${item.activity_count}</td>
+          <td>
+            <button class="secondary" data-detail="${item.id}">详情</button>
+            <button class="danger-btn" data-del="${item.id}">删除</button>
+          </td>
+        </tr>`,
+    )
+    .join("");
+
+  const totalPages = Math.max(1, Math.ceil(data.total / pageSize));
+  $("ann-page-info").textContent = `第 ${page} / ${totalPages} 页，共 ${data.total} 条`;
+  $("ann-prev").disabled = page <= 1;
+  $("ann-next").disabled = page >= totalPages;
+}
+
+function setupAnnouncements() {
+  $("btn-ann-search").addEventListener("click", () => {
+    state.announcements.q = $("ann-search").value.trim();
+    state.announcements.type = $("ann-type").value;
+    state.announcements.page = 1;
+    loadAnnouncements();
+  });
+  $("ann-search").addEventListener("keydown", (event) => {
+    if (event.key === "Enter") $("btn-ann-search").click();
+  });
+  $("ann-prev").addEventListener("click", () => {
+    state.announcements.page -= 1;
+    loadAnnouncements();
+  });
+  $("ann-next").addEventListener("click", () => {
+    state.announcements.page += 1;
+    loadAnnouncements();
+  });
+  $("ann-tbody").addEventListener("click", (event) => {
+    const detailBtn = event.target.closest("[data-detail]");
+    if (detailBtn) {
+      openDetail(detailBtn.dataset.detail);
+      return;
+    }
+    const delBtn = event.target.closest("[data-del]");
+    if (delBtn) openDeleteZone(Number(delBtn.dataset.del));
+  });
+  $("btn-detail-close").addEventListener("click", () => {
+    $("ann-detail").hidden = true;
+    state.currentAnnouncementId = null;
+  });
+}
+
+async function openDetail(id) {
+  state.currentAnnouncementId = id;
+  const data = await callApi(() => bridge.apiGet(`announcements/${id}`), null);
+  if (!data) return;
+  const announcement = data.announcement;
+
+  $("ann-detail").hidden = false;
+  $("detail-title").textContent = announcement.title;
+  $("detail-meta").innerHTML = [
+    `ID：${announcement.id}`,
+    `类型：${escapeHtml(announcement.type || "")}`,
+    `日期：${escapeHtml(fmtDateTime(announcement.announcement_date))}`,
+    `修订于源站：${escapeHtml(fmtDateTime(announcement.updated_at_source))}`,
+    `分块：${data.chunk_count}`,
+    `链接：<a href="${escapeHtml(announcement.url)}" target="_blank" rel="noreferrer">${escapeHtml(announcement.url)}</a>`,
+  ].join("　·　");
+
+  const activities = data.activities || [];
+  $("detail-activities").innerHTML = `
+    <h3>抽取的活动（${activities.length}）</h3>
+    ${
+      activities.length
+        ? activities
+            .map(
+              (item) => `
+              <div class="activity-item">
+                <span class="name">${escapeHtml(item.name)}</span>
+                <span class="tag">${escapeHtml(item.category)}</span>
+                <div class="muted">
+                  待办：${escapeHtml(item.action || "—")}　
+                  开始：${escapeHtml(fmtDateTime(item.start_time))}　
+                  结束：${escapeHtml(fmtDateTime(item.end_time))}　
+                  券/道具消失：${escapeHtml(fmtDateTime(item.item_expiry))}　
+                  物品：${escapeHtml(item.item_name || "—")}　
+                  置信度：${item.confidence}
+                </div>
+                ${item.explanation ? `<div>${escapeHtml(item.explanation)}</div>` : ""}
+              </div>`,
+            )
+            .join("")
+        : '<div class="muted">没有抽取到可提醒的活动。</div>'
+    }`;
+
+  const reminders = data.reminders || [];
+  $("detail-reminders").innerHTML = `
+    <h3>提醒计划（${reminders.length}）</h3>
+    ${
+      reminders.length
+        ? reminders
+            .map(
+              (item) => `
+              <div class="reminder-item">
+                ${escapeHtml(item.target_type)}:${escapeHtml(item.target_id)}
+                · ${fmtDateTime(item.scheduled_at)}
+                <span class="tag status-${escapeHtml(item.status)}">${escapeHtml(item.status)}</span>
+              </div>`,
+            )
+            .join("")
+        : '<div class="muted">没有提醒计划。</div>'
+    }`;
+
+  $("detail-content").textContent = announcement.content_text || "（无正文）";
+  $("detail-raw").textContent = JSON.stringify(announcement.raw_json, null, 2);
+  const revisions = data.revisions || [];
+  $("detail-revisions").innerHTML = revisions.length
+    ? `<table class="data-table"><thead><tr><th>#</th><th>标题</th><th>源站更新时间</th><th>内容指纹</th></tr></thead><tbody>${
+        revisions
+          .map(
+            (item) =>
+              `<tr><td>${item.revision_no}</td><td class="wrap">${escapeHtml(item.title)}</td><td>${fmtDateTime(item.updated_at_source)}</td><td class="wrap">${escapeHtml(item.content_hash.slice(0, 16))}…</td></tr>`,
+          )
+          .join("")
+      }</tbody></table>`
+    : '<div class="muted">没有修订记录。</div>';
+
+  resetDeleteZone();
+  $("ann-detail").scrollIntoView({ behavior: "smooth" });
+}
+
+/* ---------- two-step, non-dialog hard delete ---------- */
+function resetDeleteZone() {
+  $("del-check").checked = false;
+  $("del-input").value = "";
+  $("del-input").disabled = true;
+  $("btn-del").disabled = true;
+  $("del-result").hidden = true;
+}
+
+function openDeleteZone(id) {
+  openDetail(id);
+}
+
+function setupDeleteZone() {
+  $("del-check").addEventListener("change", (event) => {
+    $("del-input").disabled = !event.target.checked;
+    if (!event.target.checked) $("btn-del").disabled = true;
+  });
+  $("del-input").addEventListener("input", (event) => {
+    $("btn-del").disabled = event.target.value.trim() !== "DELETE";
+  });
+  $("del-input").addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && !$("btn-del").disabled) $("btn-del").click();
+  });
+  $("btn-del").addEventListener("click", async () => {
+    const id = state.currentAnnouncementId;
+    if (!id) return;
+    const result = await callApi(
+      () => bridge.apiPost(`announcements/${id}/delete`, { confirm: "DELETE" }),
+      $("del-result"),
+    );
+    if (result) {
+      showInfo($("del-result"), "已彻底删除。该公告不会再被检索、问答或提醒。");
+      resetDeleteZone();
+      $("ann-detail").hidden = true;
+      loadAnnouncements();
+      loadStats();
+    }
+  });
+}
+
+/* ---------- reminders ---------- */
+async function loadReminders() {
+  const status = $("rem-status").value;
+  const data = await callApi(() => bridge.apiGet("reminders", { status }), null);
+  if (!data) return;
+  const items = data.items || [];
+  $("rem-list").innerHTML = items.length
+    ? items
+        .map(
+          (item) => `
+          <div class="reminder-item">
+            <span class="name">${escapeHtml(item.activity_name)}</span>
+            <span class="tag status-${escapeHtml(item.status)}">${escapeHtml(item.status)}</span>
+            <span class="tag">${escapeHtml(item.target_type)}:${escapeHtml(item.target_id)}</span>
+            <div class="muted">
+              计划：${fmtDateTime(item.scheduled_at)}
+              · 活动截止：${fmtDateTime(item.end_time)}
+              · 券消失：${fmtDateTime(item.item_expiry)}
+              · 来源：${escapeHtml(item.announcement_title || "")}
+            </div>
+            <pre class="content">${escapeHtml(item.message_text || "")}</pre>
+          </div>`,
+        )
+        .join("")
+    : '<div class="muted">没有记录。</div>';
+}
+
+function setupReminders() {
+  $("btn-rem-refresh").addEventListener("click", loadReminders);
+}
+
+/* ---------- logs ---------- */
+async function loadLogs() {
+  const data = await callApi(() => bridge.apiGet("logs", { limit: 50 }), null);
+  if (!data) return;
+  $("log-tbody").innerHTML = (data.logs || [])
+    .map(
+      (item) => `
+      <tr>
+        <td>${fmtDateTime(item.started_at)}</td>
+        <td>${fmtDateTime(item.finished_at)}</td>
+        <td>${Number(item.success) === 1 ? "成功" : '<span class="tag status-failed">失败</span>'}</td>
+        <td>${item.fetch_limit}</td>
+        <td>${item.returned_count}</td>
+        <td>${item.inserted_count}</td>
+        <td>${item.revised_count}</td>
+        <td>${item.skipped_count}</td>
+        <td class="wrap">${escapeHtml(item.error || "")}</td>
+      </tr>`,
+    )
+    .join("");
+}
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+async function main() {
+  await bridge.ready();
+  document.title = bridge.t("pages.jx3-news.title", "剑网3公告知识库");
+  setupTabs();
+  setupActions();
+  setupAnnouncements();
+  setupDeleteZone();
+  setupReminders();
+  await Promise.all([loadStats(), loadAnnouncements()]);
+}
+
+main();
