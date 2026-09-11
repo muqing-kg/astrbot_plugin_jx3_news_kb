@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
+import shutil
 import sys
 import types
 from typing import Any
@@ -279,3 +281,38 @@ def test_background_tasks_start_and_terminate(monkeypatch, tmp_path):
     assert all(alive)
     assert finished
     assert plugin._background_tasks == []
+
+
+def test_plugin_loads_as_astrbot_package(monkeypatch, tmp_path):
+    """AstrBot imports the plugin as ``data.plugins.<name>.main``; relative
+    imports inside main.py must resolve in that package context."""
+    _install_fake_astrbot(monkeypatch, tmp_path)
+    plugin_dst = tmp_path / "data" / "plugins" / "astrbot_plugin_jx3_news_kb"
+    plugin_dst.mkdir(parents=True)
+    for item in ("main.py", "core", "web_api"):
+        source = _plugin_source_dir() / item
+        if source.is_dir():
+            shutil.copytree(source, plugin_dst / item)
+        else:
+            shutil.copy2(source, plugin_dst / item)
+    monkeypatch.syspath_prepend(str(tmp_path))
+
+    module_name = "data.plugins.astrbot_plugin_jx3_news_kb.main"
+    for name in [n for n in sys.modules if n.startswith("data.")]:
+        del sys.modules[name]
+    try:
+        module = importlib.import_module(module_name)
+    finally:
+        for name in [n for n in sys.modules if n.startswith("data.")]:
+            del sys.modules[name]
+
+    assert module.__name__ == module_name
+    context = FakeContext()
+    plugin = module.JX3NewsKBPlugin(context, {})
+    assert len(context.registered_apis) == 9
+
+
+def _plugin_source_dir():
+    from pathlib import Path
+
+    return Path(__file__).resolve().parent.parent

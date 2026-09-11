@@ -14,14 +14,25 @@ from astrbot.api.star import Context, Star
 from astrbot.api.web import error_response, json_response, request as web_request
 from astrbot.core.utils.astrbot_path import get_astrbot_plugin_data_path
 
-from core.activities import ActivityService
-from core.database import Database
-from core.ingest import IngestService
-from core.jx3api import NewsClient
-from core.qa import QAService
-from core.search import SearchService
-from core.scheduler import ReminderTargets, SchedulerService
-from web_api.routes import ROUTE_TABLE
+try:
+    # AstrBot loads this file as package ``data.plugins.<name>.main``.
+    from .core.activities import ActivityService
+    from .core.database import Database
+    from .core.ingest import IngestService
+    from .core.jx3api import NewsClient
+    from .core.qa import QAService
+    from .core.search import SearchService
+    from .core.scheduler import ReminderTargets, SchedulerService
+    from .web_api.routes import ROUTE_TABLE
+except ImportError:  # imported as a top-level module (tests, direct run)
+    from core.activities import ActivityService
+    from core.database import Database
+    from core.ingest import IngestService
+    from core.jx3api import NewsClient
+    from core.qa import QAService
+    from core.search import SearchService
+    from core.scheduler import ReminderTargets, SchedulerService
+    from web_api.routes import ROUTE_TABLE
 
 logger = logging.getLogger("astrbot.plugin.jx3_news_kb")
 
