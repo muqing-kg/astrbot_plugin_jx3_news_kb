@@ -55,14 +55,12 @@ class QAService:
         search_service: SearchService,
         context: Any | None = None,
         llm_provider_id: str = "",
-        llm_model: str = "",
         max_context_items: int = 8,
         max_answer_length: int = 1200,
     ) -> None:
         self.search = search_service
         self.context = context
         self.llm_provider_id = llm_provider_id
-        self.llm_model = llm_model
         self.max_context_items = max(1, int(max_context_items))
         self.max_answer_length = max(200, int(max_answer_length))
 
@@ -93,7 +91,6 @@ class QAService:
         response = await provider.text_chat(
             prompt=f"当前时间：{now}\n用户消息：{question}",
             system_prompt=ROUTE_SYSTEM_PROMPT,
-            model=self.llm_model or None,
         )
         text = str(getattr(response, "completion_text", "") or "")
         routed = extract_json_object(text)
@@ -130,8 +127,7 @@ class QAService:
                     f"用户问题：{question}\n\n公告资料：无\n"
                     f"请按系统规则回答。最大长度：{self.max_answer_length} 字。"
                 ),
-                system_prompt=ANSWER_SYSTEM_PROMPT,
-                model=self.llm_model or None,
+                system_prompt=ANSWER_SYSTEM_PROMPT
             )
             return True, str(getattr(response, "completion_text", "") or "")
 
@@ -159,7 +155,6 @@ class QAService:
                 f"最大回答长度：{self.max_answer_length} 字。"
             ),
             system_prompt=ANSWER_SYSTEM_PROMPT,
-            model=self.llm_model or None,
         )
         return True, str(getattr(response, "completion_text", "") or "")
 

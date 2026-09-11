@@ -63,13 +63,7 @@
     "type": "string",
     "default": "",
     "_special": "select_provider",
-    "hint": "留空时使用 AstrBot 默认提供商。"
-  },
-  "llm_model": {
-    "description": "指定 LLM 模型名",
-    "type": "string",
-    "default": "",
-    "hint": "留空时使用提供商的默认模型。"
+    "hint": "留空时使用 AstrBot 默认提供商，模型使用该提供商的默认模型。"
   },
   "embedding_provider_id": {
     "description": "向量召回的 Embedding 提供商",

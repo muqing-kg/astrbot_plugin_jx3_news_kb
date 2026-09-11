@@ -123,18 +123,22 @@ def test_detail_includes_revisions_activities_reminders(plugin):
     ))
     assert data["announcement"]["title"] == "版本更新公告"
     assert data["announcement"]["raw_json"]["desc"]["id"] == "1"
-    assert data["activities"][0]["name"] == "签到领券"
-    assert len(data["reminders"]) == 1
     assert data["chunk_count"] == 1
+    assert "activities" not in data
+    assert "reminders" not in data
 
     missing = asyncio.run(routes.handle_announcement_detail(plugin, {}, {}, "999"))
     assert missing[1] == 404
 
 
-def test_delete_requires_confirm_word(plugin):
+def test_delete_requires_confirmation_flag(plugin):
     announcement_id = _insert_announcement(plugin)
-    wrong = asyncio.run(routes.handle_announcement_delete(
+    missing = asyncio.run(routes.handle_announcement_delete(
         plugin, {}, {}, str(announcement_id)
+    ))
+    assert missing[1] == 400
+    wrong = asyncio.run(routes.handle_announcement_delete(
+        plugin, {}, {"confirm": "DELETE"}, str(announcement_id)
     ))
     assert wrong[1] == 400
     assert plugin.db.count("announcements") == 1
@@ -157,7 +161,7 @@ def test_delete_removes_everything_and_tombstones(plugin):
     )
 
     data = asyncio.run(routes.handle_announcement_delete(
-        plugin, {}, {"confirm": "DELETE"}, str(announcement_id)
+        plugin, {}, {"confirm": True}, str(announcement_id)
     ))
     assert data == {"deleted": True, "id": announcement_id, "cancelled_reminders": 2}
 
@@ -172,7 +176,52 @@ def test_delete_removes_everything_and_tombstones(plugin):
     assert tombstone["url"] == "https://example.com/a"
 
     again = asyncio.run(routes.handle_announcement_delete(
-        plugin, {}, {"confirm": "DELETE"}, str(announcement_id)
+        plugin, {}, {"confirm": True}, str(announcement_id)
+    ))
+    assert again[1] == 404
+
+
+def _insert_future_activity(plugin, name="签到领券", end_time="2099-09-17T07:00:00+08:00") -> int:
+    announcement_id = _insert_announcement(plugin)
+    with plugin.db.connect() as conn:
+        cursor = conn.execute(
+            """
+            INSERT INTO activities(
+                announcement_id, name, action, category, end_time, item_name
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (announcement_id, name, "使用", "free_coupon", end_time, "校服拓印券"),
+        )
+        return int(cursor.lastrowid)
+
+
+def test_activities_lists_only_ongoing(plugin):
+    activity_id = _insert_future_activity(plugin, name="进行中的活动")
+    _insert_future_activity(plugin, name="已结束的活动", end_time="2020-01-01T00:00:00+08:00")
+
+    data = asyncio.run(routes.handle_activities(plugin, {}, {}))
+    names = [item["name"] for item in data["items"]]
+    assert names == ["进行中的活动"]
+    assert data["items"][0]["id"] == activity_id
+    assert data["items"][0]["announcement_title"] == "版本更新公告"
+
+
+def test_activity_delete_removes_reminders_without_confirmation(plugin):
+    activity_id = _insert_future_activity(plugin)
+    plugin.scheduler.create_pending_reminders(
+        ReminderTargets(sessions=[FULL_GROUP_SESSION])
+    )
+    assert plugin.db.count("reminders") == 1
+
+    data = asyncio.run(routes.handle_activity_delete(
+        plugin, {}, {}, str(activity_id)
+    ))
+    assert data == {"deleted": True, "id": activity_id}
+    assert plugin.db.count("activities") == 0
+    assert plugin.db.count("reminders") == 0
+
+    again = asyncio.run(routes.handle_activity_delete(
+        plugin, {}, {}, str(activity_id)
     ))
     assert again[1] == 404
 

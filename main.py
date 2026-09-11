@@ -78,7 +78,6 @@ class JX3NewsKBPlugin(Star):
             self.search_service,
             context=context,
             llm_provider_id=str(config.get("llm_provider_id") or ""),
-            llm_model=str(config.get("llm_model") or ""),
         )
         self.scheduler = SchedulerService(
             self.db,

@@ -12,7 +12,6 @@ from typing import Any
 
 PAGE_SIZE_DEFAULT = 20
 PAGE_SIZE_MAX = 100
-DELETE_CONFIRM_WORD = "DELETE"
 
 
 def _int_query(query: dict[str, Any], key: str, default: int, minimum: int, maximum: int) -> int:
@@ -152,24 +151,6 @@ async def handle_announcement_detail(
             """,
             (announcement_id_int,),
         ).fetchall()
-        activities = conn.execute(
-            """
-            SELECT id, name, action, category, start_time, end_time,
-                   item_expiry, item_name, explanation, confidence
-            FROM activities WHERE announcement_id = ?
-            ORDER BY id
-            """,
-            (announcement_id_int,),
-        ).fetchall()
-        reminders = conn.execute(
-            """
-            SELECT r.id, r.target_type, r.target_id, r.scheduled_at, r.status
-            FROM reminders r JOIN activities a ON a.id = r.activity_id
-            WHERE a.announcement_id = ?
-            ORDER BY r.scheduled_at
-            """,
-            (announcement_id_int,),
-        ).fetchall()
         chunk_count = int(
             conn.execute(
                 "SELECT COUNT(*) FROM chunks WHERE announcement_id = ?",
@@ -181,8 +162,6 @@ async def handle_announcement_detail(
     return {
         "announcement": detail,
         "revisions": [dict(item) for item in revisions],
-        "activities": [dict(item) for item in activities],
-        "reminders": [dict(item) for item in reminders],
         "chunk_count": chunk_count,
     }
 
@@ -203,13 +182,55 @@ async def handle_announcement_delete(
         announcement_id_int = int(announcement_id)
     except ValueError:
         return {"error": "invalid id"}, 400
-    if str(payload.get("confirm") or "").strip() != DELETE_CONFIRM_WORD:
-        return {"error": "confirm word mismatch; type DELETE to confirm"}, 400
+    if payload.get("confirm") is not True:
+        return {"error": "missing confirmation"}, 400
     pending = plugin.scheduler.cancel_reminders_for_announcement(announcement_id_int)
     deleted = plugin.ingest.hard_delete_announcement(announcement_id_int)
     if not deleted:
         return {"error": "announcement not found"}, 404
     return {"deleted": True, "id": announcement_id_int, "cancelled_reminders": pending}
+
+
+async def handle_activities(
+    plugin: Any, query: dict[str, Any], payload: dict[str, Any]
+) -> dict[str, Any]:
+    """Ongoing activities: deadline (item expiry first) still in the future."""
+    now_iso = plugin.scheduler.now().isoformat(timespec="seconds")
+    with plugin.db.connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT a.id, a.name, a.action, a.category, a.start_time, a.end_time,
+                   a.item_expiry, a.item_name, a.explanation, a.confidence,
+                   an.title AS announcement_title, an.url,
+                   date(an.published_at) AS announcement_date,
+                   (SELECT COUNT(*) FROM reminders r
+                    WHERE r.activity_id = a.id AND r.status = 'pending')
+                       AS pending_reminders
+            FROM activities a
+            JOIN announcements an ON an.id = a.announcement_id
+            WHERE COALESCE(NULLIF(a.item_expiry, ''), NULLIF(a.end_time, '')) > ?
+            ORDER BY COALESCE(NULLIF(a.item_expiry, ''), NULLIF(a.end_time, ''))
+            LIMIT 200
+            """,
+            (now_iso,),
+        ).fetchall()
+    return {"items": [dict(row) for row in rows]}
+
+
+async def handle_activity_delete(
+    plugin: Any, query: dict[str, Any], payload: dict[str, Any], activity_id: str
+) -> tuple[dict[str, Any], int]:
+    """Remove one activity and its scheduled reminders immediately."""
+    try:
+        activity_id_int = int(activity_id)
+    except ValueError:
+        return {"error": "invalid id"}, 400
+    with plugin.db.connect() as conn:
+        cursor = conn.execute("DELETE FROM activities WHERE id = ?", (activity_id_int,))
+        deleted = int(cursor.rowcount) > 0
+    if not deleted:
+        return {"error": "activity not found"}, 404
+    return {"deleted": True, "id": activity_id_int}
 
 
 async def handle_fetch(
@@ -307,6 +328,8 @@ ROUTE_TABLE = [
     ("/announcements", ["GET"], handle_announcements),
     ("/announcements/<announcement_id>", ["GET"], handle_announcement_detail),
     ("/announcements/<announcement_id>/delete", ["POST"], handle_announcement_delete),
+    ("/activities", ["GET"], handle_activities),
+    ("/activities/<activity_id>/delete", ["POST"], handle_activity_delete),
     ("/fetch", ["POST"], handle_fetch),
     ("/rebuild/fts", ["POST"], handle_rebuild_fts),
     ("/rebuild/embeddings", ["POST"], handle_rebuild_embeddings),

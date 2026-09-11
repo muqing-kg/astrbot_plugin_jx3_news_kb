@@ -144,9 +144,10 @@ def _make_plugin(monkeypatch, tmp_path, config=None):
 def test_plugin_registers_all_routes(monkeypatch, tmp_path):
     main_module, plugin, context = _make_plugin(monkeypatch, tmp_path)
     routes = [route for route, _, _ in context.registered_apis]
-    assert len(routes) == 9
+    assert len(routes) == 11
     assert all(route.startswith("/astrbot_plugin_jx3_news_kb") for route in routes)
     assert "/astrbot_plugin_jx3_news_kb/announcements/<announcement_id>/delete" in routes
+    assert "/astrbot_plugin_jx3_news_kb/activities/<activity_id>/delete" in routes
 
 
 def test_message_requires_wake(monkeypatch, tmp_path):
@@ -309,7 +310,7 @@ def test_plugin_loads_as_astrbot_package(monkeypatch, tmp_path):
     assert module.__name__ == module_name
     context = FakeContext()
     plugin = module.JX3NewsKBPlugin(context, {})
-    assert len(context.registered_apis) == 9
+    assert len(context.registered_apis) == 11
 
 
 def _plugin_source_dir():

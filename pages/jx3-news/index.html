@@ -79,8 +79,6 @@
             <button id="btn-detail-close" class="secondary">关闭</button>
           </div>
           <div id="detail-meta" class="meta"></div>
-          <div id="detail-activities"></div>
-          <div id="detail-reminders"></div>
           <h3>清洗后正文</h3>
           <pre id="detail-content" class="content"></pre>
           <details>
@@ -103,27 +101,19 @@
               <input type="checkbox" id="del-check" />
               我确认要彻底删除该公告及所有关联数据
             </label>
-            <input id="del-input" type="text" placeholder='输入 DELETE 后才能执行' disabled />
             <button id="btn-del" class="danger-btn" disabled>执行彻底删除</button>
             <div id="del-result" class="action-result" hidden></div>
           </div>
         </div>
       </section>
 
-      <!-- 到期提醒 -->
+      <!-- 到期提醒：进行中的活动 -->
       <section id="panel-reminders" class="panel">
         <div class="card">
           <div class="toolbar">
-            <select id="rem-status">
-              <option value="pending">待发送</option>
-              <option value="sent">已发送</option>
-              <option value="failed">发送失败</option>
-              <option value="cancelled">已取消</option>
-              <option value="all">全部</option>
-            </select>
-            <button id="btn-rem-refresh">刷新</button>
+            <button id="btn-act-refresh">刷新</button>
           </div>
-          <div id="rem-list"></div>
+          <div id="activities-list"></div>
         </div>
       </section>
 

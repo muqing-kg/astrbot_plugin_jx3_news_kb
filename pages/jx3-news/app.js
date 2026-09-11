@@ -51,7 +51,7 @@ function setupTabs() {
       panel.classList.toggle("active", panel.id === `panel-${tab.dataset.tab}`),
     );
     if (tab.dataset.tab === "logs") loadLogs();
-    if (tab.dataset.tab === "reminders") loadReminders();
+    if (tab.dataset.tab === "reminders") loadActivities();
   });
 }
 
@@ -221,50 +221,6 @@ async function openDetail(id) {
     `链接：<a href="${escapeHtml(announcement.url)}" target="_blank" rel="noreferrer">${escapeHtml(announcement.url)}</a>`,
   ].join("　·　");
 
-  const activities = data.activities || [];
-  $("detail-activities").innerHTML = `
-    <h3>抽取的活动（${activities.length}）</h3>
-    ${
-      activities.length
-        ? activities
-            .map(
-              (item) => `
-              <div class="activity-item">
-                <span class="name">${escapeHtml(item.name)}</span>
-                <span class="tag">${escapeHtml(item.category)}</span>
-                <div class="muted">
-                  待办：${escapeHtml(item.action || "—")}　
-                  开始：${escapeHtml(fmtDateTime(item.start_time))}　
-                  结束：${escapeHtml(fmtDateTime(item.end_time))}　
-                  券/道具消失：${escapeHtml(fmtDateTime(item.item_expiry))}　
-                  物品：${escapeHtml(item.item_name || "—")}　
-                  置信度：${item.confidence}
-                </div>
-                ${item.explanation ? `<div>${escapeHtml(item.explanation)}</div>` : ""}
-              </div>`,
-            )
-            .join("")
-        : '<div class="muted">没有抽取到可提醒的活动。</div>'
-    }`;
-
-  const reminders = data.reminders || [];
-  $("detail-reminders").innerHTML = `
-    <h3>提醒计划（${reminders.length}）</h3>
-    ${
-      reminders.length
-        ? reminders
-            .map(
-              (item) => `
-              <div class="reminder-item">
-                ${escapeHtml(item.target_type)}:${escapeHtml(item.target_id)}
-                · ${fmtDateTime(item.scheduled_at)}
-                <span class="tag status-${escapeHtml(item.status)}">${escapeHtml(item.status)}</span>
-              </div>`,
-            )
-            .join("")
-        : '<div class="muted">没有提醒计划。</div>'
-    }`;
-
   $("detail-content").textContent = announcement.content_text || "（无正文）";
   $("detail-raw").textContent = JSON.stringify(announcement.raw_json, null, 2);
   const revisions = data.revisions || [];
@@ -286,8 +242,6 @@ async function openDetail(id) {
 /* ---------- two-step, non-dialog hard delete ---------- */
 function resetDeleteZone() {
   $("del-check").checked = false;
-  $("del-input").value = "";
-  $("del-input").disabled = true;
   $("btn-del").disabled = true;
   $("del-result").hidden = true;
 }
@@ -298,20 +252,13 @@ function openDeleteZone(id) {
 
 function setupDeleteZone() {
   $("del-check").addEventListener("change", (event) => {
-    $("del-input").disabled = !event.target.checked;
-    if (!event.target.checked) $("btn-del").disabled = true;
-  });
-  $("del-input").addEventListener("input", (event) => {
-    $("btn-del").disabled = event.target.value.trim() !== "DELETE";
-  });
-  $("del-input").addEventListener("keydown", (event) => {
-    if (event.key === "Enter" && !$("btn-del").disabled) $("btn-del").click();
+    $("btn-del").disabled = !event.target.checked;
   });
   $("btn-del").addEventListener("click", async () => {
     const id = state.currentAnnouncementId;
     if (!id) return;
     const result = await callApi(
-      () => bridge.apiPost(`announcements/${id}/delete`, { confirm: "DELETE" }),
+      () => bridge.apiPost(`announcements/${id}/delete`, { confirm: true }),
       $("del-result"),
     );
     if (result) {
@@ -324,35 +271,47 @@ function setupDeleteZone() {
   });
 }
 
-/* ---------- reminders ---------- */
-async function loadReminders() {
-  const status = $("rem-status").value;
-  const data = await callApi(() => bridge.apiGet("reminders", { status }), null);
+/* ---------- ongoing activities (reminder tab) ---------- */
+async function loadActivities() {
+  const data = await callApi(() => bridge.apiGet("activities"), null);
   if (!data) return;
   const items = data.items || [];
-  $("rem-list").innerHTML = items.length
+  $("activities-list").innerHTML = items.length
     ? items
         .map(
           (item) => `
-              <div class="reminder-item">
-                <span class="name">${escapeHtml(item.activity_name)}</span>
-                <span class="tag status-${escapeHtml(item.status)}">${escapeHtml(item.status)}</span>
-                <span class="tag">${escapeHtml(item.target_id)}</span>
+          <div class="reminder-item">
+            <span class="name">${escapeHtml(item.name)}</span>
+            <span class="tag">${escapeHtml(item.category)}</span>
+            ${item.pending_reminders > 0 ? `<span class="tag status-pending">待发提醒 ${item.pending_reminders}</span>` : ""}
             <div class="muted">
-              计划：${fmtDateTime(item.scheduled_at)}
-              · 活动截止：${fmtDateTime(item.end_time)}
-              · 券消失：${fmtDateTime(item.item_expiry)}
-              · 来源：${escapeHtml(item.announcement_title || "")}
+              待办：${escapeHtml(item.action || "—")}
+              · 开始：${fmtDateTime(item.start_time)}
+              · 截止：${fmtDateTime(item.end_time)}
+              · 券/道具消失：${fmtDateTime(item.item_expiry)}
+              ${item.item_name ? `· 物品：${escapeHtml(item.item_name)}` : ""}
             </div>
-            <pre class="content">${escapeHtml(item.message_text || "")}</pre>
+            ${item.explanation ? `<div>${escapeHtml(item.explanation)}</div>` : ""}
+            <div class="muted">来源：${escapeHtml(item.announcement_date)}《<a href="${escapeHtml(item.url)}" target="_blank" rel="noreferrer">${escapeHtml(item.announcement_title)}</a>》</div>
+            <button class="danger-btn" data-act-del="${item.id}">彻底删除该条提醒</button>
           </div>`,
         )
         .join("")
-    : '<div class="muted">没有记录。</div>';
+    : '<div class="muted">当前没有进行中的活动。</div>';
 }
 
-function setupReminders() {
-  $("btn-rem-refresh").addEventListener("click", loadReminders);
+function setupActivities() {
+  $("btn-act-refresh").addEventListener("click", loadActivities);
+  $("activities-list").addEventListener("click", async (event) => {
+    const delBtn = event.target.closest("[data-act-del]");
+    if (!delBtn) return;
+    await callApi(
+      () => bridge.apiPost(`activities/${delBtn.dataset.actDel}/delete`, {}),
+      null,
+    );
+    loadActivities();
+    loadStats();
+  });
 }
 
 /* ---------- logs ---------- */
@@ -393,7 +352,7 @@ async function main() {
   setupActions();
   setupAnnouncements();
   setupDeleteZone();
-  setupReminders();
+  setupActivities();
   await Promise.all([loadStats(), loadAnnouncements()]);
 }
 
