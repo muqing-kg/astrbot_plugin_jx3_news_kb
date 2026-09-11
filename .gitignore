@@ -5,3 +5,6 @@ __pycache__/
 *.db
 *.db-wal
 *.db-shm
+
+# local working notes
+work/
