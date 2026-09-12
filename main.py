@@ -79,21 +79,21 @@ class JX3NewsKBPlugin(Star):
         self.qa = QAService(
             self.search_service,
             context=context,
-            llm_provider_id=str(config.get("llm_provider_id") or ""),
+            llm_provider_id=str(self.config.get("llm_provider_id") or ""),
         )
         self.scheduler = SchedulerService(
             self.db,
             self.ingest,
             self.activity_service,
             timezone_name=self.timezone.key,
-            initial_fetch_limit=_as_int(config, "initial_fetch_limit", 50),
-            daily_fetch_limit=_as_int(config, "daily_fetch_limit", 10),
-            catchup_fetch_limit=_as_int(config, "catchup_fetch_limit", 50),
+            initial_fetch_limit=_as_int(self.config, "initial_fetch_limit", 50),
+            daily_fetch_limit=_as_int(self.config, "daily_fetch_limit", 10),
+            catchup_fetch_limit=_as_int(self.config, "catchup_fetch_limit", 50),
         )
         self.client = NewsClient(
-            base_url=str(config.get("api_base_url") or "https://www.jx3api.com"),
-            records_path=str(config.get("news_records_path") or "/news/records"),
-            token=str(config.get("api_token") or ""),
+            base_url=str(self.config.get("api_base_url") or "https://www.jx3api.com"),
+            records_path=str(self.config.get("news_records_path") or "/news/records"),
+            token=str(self.config.get("api_token") or ""),
         )
         self._background_tasks: list[asyncio.Task] = []
         self._provider_probe: dict[str, Any] | None = None
@@ -344,7 +344,9 @@ class JX3NewsKBPlugin(Star):
 
         ``is_wake`` is forced to True for every message matched by this plugin's
         event listener; ``is_at_or_wake_command`` only reflects a real wake
-        (wake prefix, @bot, reply-to-bot or private chat).
+        (wake prefix, @bot, reply-to-bot or private chat). The answer is sent
+        directly and the event stopped so AstrBot's default LLM stage does not
+        answer the same question a second time.
         """
         if not getattr(event, "is_at_or_wake_command", False):
             return
@@ -357,7 +359,8 @@ class JX3NewsKBPlugin(Star):
             logger.exception("qa pipeline failed")
             return
         if relevant and answer:
-            yield event.plain_result(answer)
+            await event.send(event.plain_result(answer))
+            event.stop_event()
 
     def _session_allowed(self, event: AstrMessageEvent) -> bool:
         group_id = str(event.get_group_id() or "").strip()

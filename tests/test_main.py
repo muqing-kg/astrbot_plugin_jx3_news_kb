@@ -125,6 +125,8 @@ class FakeEvent:
         self.unified_msg_origin = "fake:GroupMessage:10001"
         self._group_id = group_id
         self._sender_id = sender_id
+        self.sent_results: list[Any] = []
+        self.stopped = False
 
     def get_group_id(self):
         return self._group_id
@@ -134,6 +136,12 @@ class FakeEvent:
 
     def plain_result(self, text):
         return f"plain:{text}"
+
+    async def send(self, result):
+        self.sent_results.append(result)
+
+    def stop_event(self):
+        self.stopped = True
 
 
 def _make_plugin(monkeypatch, tmp_path, config=None):
@@ -167,17 +175,17 @@ def test_message_requires_real_wake(monkeypatch, tmp_path):
 
     plugin.qa.answer = fake_answer
 
-    async def consume(event):
-        return [item async for item in plugin.on_message(event)]
-
     # AstrBot forces is_wake=True for plugin listeners, but plain group chat
     # that never woke the bot must stay silent.
-    unwoke = asyncio.run(consume(FakeEvent(is_at_or_wake_command=False, group_id="10001")))
-    assert unwoke == []
+    unwoke = FakeEvent(is_at_or_wake_command=False, group_id="10001")
+    asyncio.run(plugin.on_message(unwoke))
+    assert unwoke.sent_results == [] and unwoke.stopped is False
     assert called == []
 
-    woke = asyncio.run(consume(FakeEvent(is_at_or_wake_command=True, group_id="10001")))
-    assert woke == ["plain:answer"]
+    woke = FakeEvent(is_at_or_wake_command=True, group_id="10001")
+    asyncio.run(plugin.on_message(woke))
+    assert woke.sent_results == ["plain:answer"]
+    assert woke.stopped is True
     assert called == ["新活动"]
 
 
@@ -193,14 +201,13 @@ def test_message_group_whitelist(monkeypatch, tmp_path):
 
     plugin.qa.answer = fake_answer
 
-    async def consume(event):
-        return [item async for item in plugin.on_message(event)]
+    outside = FakeEvent(group_id="99999")
+    asyncio.run(plugin.on_message(outside))
+    assert outside.sent_results == [] and called == []
 
-    outside = asyncio.run(consume(FakeEvent(group_id="99999")))
-    assert outside == [] and called == []
-
-    inside = asyncio.run(consume(FakeEvent(group_id="10001")))
-    assert inside == ["plain:answer"]
+    inside = FakeEvent(group_id="10001")
+    asyncio.run(plugin.on_message(inside))
+    assert inside.sent_results == ["plain:answer"]
 
 
 def test_private_allow_switch(monkeypatch, tmp_path):
@@ -215,11 +222,9 @@ def test_private_allow_switch(monkeypatch, tmp_path):
 
     plugin.qa.answer = fake_answer
 
-    async def consume(event):
-        return [item async for item in plugin.on_message(event)]
-
-    outputs = asyncio.run(consume(FakeEvent(group_id="")))
-    assert outputs == [] and called == []
+    event = FakeEvent(group_id="")
+    asyncio.run(plugin.on_message(event))
+    assert event.sent_results == [] and called == []
 
 
 def test_send_due_reminders_marks_sent(monkeypatch, tmp_path):

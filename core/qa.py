@@ -148,22 +148,6 @@ def verify_answer(
     return kept
 
 
-def format_sources(
-    sources: set[int], context_items: list[dict[str, Any]]
-) -> str:
-    """Render deduplicated source notes for the cited context items."""
-    lines: list[str] = []
-    seen: set[tuple[str, str]] = set()
-    for index in sorted(sources):
-        item = context_items[index - 1]
-        key = (str(item.get("announcement_date") or ""), str(item.get("title") or ""))
-        if key in seen:
-            continue
-        seen.add(key)
-        lines.append(f"（来源：{key[0]}《{key[1]}》）")
-    return "\n".join(lines)
-
-
 class QAService:
     def __init__(
         self,
