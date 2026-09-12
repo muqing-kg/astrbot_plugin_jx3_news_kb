@@ -97,9 +97,16 @@ def test_verify_exempts_group_headings_with_source_tag():
     )
     kept = verify_answer(answer, CONTEXT)
     assert kept[0] == "唐门技改分两类。"
-    assert kept[1] == "一、已生效调整（9月10日版本更新）"
-    assert kept[3] == "二、计划调整（9月8日资料片预告，尚未上线）"
-    assert len(kept) == 5
+    # One blank line before every group heading for visual separation.
+    assert kept == [
+        "唐门技改分两类。",
+        "",
+        "一、已生效调整（9月10日版本更新）",
+        "1. 奇穴增伤叠加异常已修复；",
+        "",
+        "二、计划调整（9月8日资料片预告，尚未上线）",
+        "1. 神机值体系联动整合。",
+    ]
 
 
 def test_verify_ignores_item_index_numbers():

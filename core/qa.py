@@ -145,7 +145,14 @@ def verify_answer(
         if names and not all(name in cited_text for name in names):
             continue
         kept.append(bare)
-    return kept
+
+    # Visual separation: one blank line before every group heading.
+    spaced: list[str] = []
+    for line in kept:
+        if _GROUP_HEADING_RE.match(line) and spaced:
+            spaced.append("")
+        spaced.append(line)
+    return spaced
 
 
 class QAService:
