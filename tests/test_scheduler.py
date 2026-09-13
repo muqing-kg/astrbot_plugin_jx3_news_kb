@@ -338,7 +338,11 @@ def test_create_pending_reminders_is_idempotent(tmp_path):
     first = scheduler.create_pending_reminders(TARGETS)
     second = scheduler.create_pending_reminders(TARGETS)
     assert first == 4  # 2 slots x 2 targets
-    assert second == 0
+    # Re-running replaces future slots instead of accumulating duplicates.
+    assert second == 4
+    with scheduler.db.connect() as conn:
+        total = int(conn.execute("SELECT COUNT(*) FROM reminders").fetchone()[0])
+    assert total == 4
 
     with scheduler.db.connect() as conn:
         rows = conn.execute(
@@ -359,6 +363,33 @@ def test_create_pending_reminders_without_targets(tmp_path):
         scheduler.db, announcement_id, end_time="2099-09-17T07:00:00+08:00"
     )
     assert scheduler.create_pending_reminders(ReminderTargets(sessions=[])) == 0
+
+
+def test_create_pending_reminders_refresh_on_config_change(tmp_path):
+    scheduler = _make_scheduler(tmp_path)
+    announcement_id = _insert_announcement(scheduler.db)
+    _insert_activity(
+        scheduler.db, announcement_id, end_time="2099-09-17T07:00:00+08:00"
+    )
+    scheduler.create_pending_reminders(TARGETS)
+
+    # User moves the daily push time; the next full pass must replace the
+    # stale future slots instead of adding a second set.
+    new_targets = ReminderTargets(
+        sessions=["fake:GroupMessage:10001", "fake:FriendMessage:20001"],
+        days_before=1,
+        send_time="11:30",
+    )
+    scheduler.create_pending_reminders(new_targets)
+
+    with scheduler.db.connect() as conn:
+        rows = conn.execute(
+            "SELECT scheduled_at, status FROM reminders ORDER BY id"
+        ).fetchall()
+    assert len(rows) == 4  # replaced, not duplicated
+    assert all("11:30" in row["scheduled_at"] or "21:00" in row["scheduled_at"]
+               for row in rows)
+    assert all(row["status"] == "pending" for row in rows)
 
 
 def test_from_config_collects_full_session_addresses():
