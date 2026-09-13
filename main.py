@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -16,6 +15,7 @@ from astrbot.core.utils.astrbot_path import get_astrbot_plugin_data_path
 
 try:
     # AstrBot loads this file as package ``data.plugins.<name>.main``.
+    from astrbot.core.log import LogManager
     from .core.activities import ActivityService
     from .core.database import Database
     from .core.ingest import IngestService
@@ -44,7 +44,10 @@ except ImportError:  # imported as a top-level module (tests, direct run)
     )
     from web_api.routes import ROUTE_TABLE
 
-logger = logging.getLogger("astrbot.plugin.jx3_news_kb")
+# Official per-plugin logger: attaches the enricher filter (plugin_tag) and
+# the WebUI log queue handler; a raw logging.getLogger child of "astrbot"
+# would crash AstrBot's queue handler with KeyError: plugin_tag.
+logger = LogManager.get_plugin_logger("jx3_news_kb")
 
 PLUGIN_NAME = "astrbot_plugin_jx3_news_kb"
 REMINDER_LOOP_INTERVAL = 60

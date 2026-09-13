@@ -22,6 +22,16 @@ def _install_fake_astrbot(monkeypatch, data_path) -> None:
     web = types.ModuleType("astrbot.api.web")
     core = types.ModuleType("astrbot.core")
     utils = types.ModuleType("astrbot.core.utils")
+    log_mod = types.ModuleType("astrbot.core.log")
+
+    class _FakeLogManager:
+        @staticmethod
+        def get_plugin_logger(plugin_name: str):
+            import logging as _logging
+
+            return _logging.getLogger(f"fake.plugin.{plugin_name}")
+
+    log_mod.LogManager = _FakeLogManager
     astrbot_path = types.ModuleType("astrbot.core.utils.astrbot_path")
 
     event.EventMessageType = types.SimpleNamespace(
@@ -71,6 +81,7 @@ def _install_fake_astrbot(monkeypatch, data_path) -> None:
     astrbot.api.star = star
     astrbot.api.web = web
     astrbot.core = core
+    astrbot.core.log = log_mod
     astrbot.core.utils = utils
     astrbot.core.utils.astrbot_path = astrbot_path
     for name, module in {
@@ -80,6 +91,7 @@ def _install_fake_astrbot(monkeypatch, data_path) -> None:
         "astrbot.api.star": star,
         "astrbot.api.web": web,
         "astrbot.core": core,
+        "astrbot.core.log": log_mod,
         "astrbot.core.utils": utils,
         "astrbot.core.utils.astrbot_path": astrbot_path,
     }.items():
