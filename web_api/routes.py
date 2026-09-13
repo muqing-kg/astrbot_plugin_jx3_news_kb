@@ -8,6 +8,9 @@ Handlers are framework-agnostic async callables taking
 
 from __future__ import annotations
 
+from __future__ import annotations
+
+from datetime import datetime
 from typing import Any
 
 PAGE_SIZE_DEFAULT = 20
@@ -37,7 +40,8 @@ async def handle_stats(plugin: Any, query: dict[str, Any], payload: dict[str, An
         )
         scheduled_reminders = conn.execute(
             """
-            SELECT r.id, r.target_type, r.target_id, r.scheduled_at, r.status,
+            SELECT r.id, r.activity_id, r.target_type, r.target_id,
+                   r.scheduled_at, r.status,
                    a.name, an.title AS announcement_title, an.url,
                    date(an.published_at) AS announcement_date
             FROM reminders r
@@ -48,6 +52,16 @@ async def handle_stats(plugin: Any, query: dict[str, Any], payload: dict[str, An
             LIMIT 200
             """
         ).fetchall()
+
+    # Only show slots valid under the CURRENT reminder windows (countdown /
+    # maintenance evening / urgent); stale rows are hidden.
+    valid_keys = plugin.valid_slot_keys()
+    upcoming_reminders = [
+        dict(row)
+        for row in scheduled_reminders
+        if (row["activity_id"], row["scheduled_at"]) in valid_keys
+    ]
+
     snapshot = plugin.scheduler.status_snapshot(
         str(plugin.config.get("daily_fetch_time", "00:00"))
     )
@@ -55,7 +69,7 @@ async def handle_stats(plugin: Any, query: dict[str, Any], payload: dict[str, An
     return {
         "counts": counts,
         "pending_reminders": pending,
-        "upcoming_reminders": [dict(row) for row in scheduled_reminders],
+        "upcoming_reminders": upcoming_reminders,
         "last_fetch": snapshot["last_fetch"],
         "next_fetch_at": snapshot["next_fetch_at"],
         "embedding_available": probe["embedding"]["available"],

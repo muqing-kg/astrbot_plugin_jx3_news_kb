@@ -48,6 +48,11 @@ class FakePlugin:
     def background_alive(self) -> bool:
         return True
 
+    def valid_slot_keys(self) -> set[tuple[int, str]]:
+        return self.scheduler.valid_slot_keys(
+            ReminderTargets.from_config(self.config)
+        )
+
 
 def _insert_announcement(
     plugin: FakePlugin, title="版本更新公告", url="https://example.com/a"
@@ -90,6 +95,7 @@ def test_stats_counts_and_next_fetch(plugin):
     assert data["embedding_available"] is False
     assert data["reminder_enabled"] is True
     assert data["reminder_targets"] == 0  # FakePlugin whitelist is empty
+    assert data["upcoming_reminders"] == []
 
 
 def test_announcement_list_search_and_pagination(plugin):
@@ -248,6 +254,31 @@ def test_fetch_route_validates_limit(plugin):
     ok = asyncio.run(routes.handle_fetch(plugin, {}, {"limit": 10}))
     assert ok["success"] is True
     assert plugin.fetch_calls == [10]
+
+
+def test_stats_upcoming_only_shows_current_window_rows(plugin):
+    announcement_id = _insert_announcement(plugin)
+    activity_id = _insert_future_activity(plugin)
+    plugin.scheduler.create_pending_reminders(
+        ReminderTargets(sessions=[FULL_GROUP_SESSION])
+    )
+    # A stale row outside the current reminder windows.
+    with plugin.db.connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO reminders(
+                activity_id, target_type, target_id, scheduled_at, message_text
+            ) VALUES (?, 'group', 'fake:GroupMessage:10001',
+                      '2098-01-01T00:00:00+08:00', 'stale')
+            """,
+            (activity_id,),
+        )
+
+    data = asyncio.run(routes.handle_stats(plugin, {}, {}))
+    times = [row["scheduled_at"] for row in data["upcoming_reminders"]]
+    assert times and all(t.startswith("2099-09-16") for t in times)
+    # Stale row stays in the database, it is just not displayed.
+    assert data["pending_reminders"] == 3
 
 
 def test_rebuild_routes(plugin):

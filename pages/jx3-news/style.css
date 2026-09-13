@@ -204,23 +204,49 @@ summary { cursor: pointer; color: var(--muted); }
 .target-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 10px;
+  gap: 12px;
 }
 @media (max-width: 900px) {
   .target-grid { grid-template-columns: 1fr; }
 }
 .target-card {
+  background: var(--card-bg);
   border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 10px 12px;
+  border-radius: 10px;
+  padding: 12px 14px;
   align-self: start;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+  transition: box-shadow 0.15s ease, transform 0.15s ease;
+}
+.target-card:hover {
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.1);
+  transform: translateY(-1px);
 }
 .target-name {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
   font-weight: 600;
   font-size: 12px;
   word-break: break-all;
-  padding-bottom: 6px;
   margin-bottom: 6px;
-  border-bottom: 1px solid var(--border);
 }
-.target-item { padding: 3px 0; }
+.target-count {
+  flex: none;
+  padding: 1px 8px;
+  border-radius: 10px;
+  background: var(--primary-weak);
+  color: var(--primary);
+  font-size: 11px;
+}
+.target-item {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: baseline;
+  padding: 6px 0;
+  font-size: 13px;
+}
+.target-item + .target-item { border-top: 1px dashed var(--border); }
+.target-item .muted { white-space: nowrap; font-size: 12px; flex: none; }

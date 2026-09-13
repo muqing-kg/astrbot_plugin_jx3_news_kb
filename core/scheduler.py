@@ -351,6 +351,29 @@ class SchedulerService:
             return f"{hours} 小时"
         return f"{hours} 小时 {rest} 分钟"
 
+    def valid_slot_keys(
+        self, targets: ReminderTargets, now: datetime | None = None
+    ) -> set[tuple[int, str]]:
+        """(activity_id, scheduled_at) pairs valid under the current windows."""
+        if now is None:
+            now = self.now()
+        keys: set[tuple[int, str]] = set()
+        with self.db.connect() as conn:
+            rows = conn.execute(
+                "SELECT id, item_expiry, end_time FROM activities"
+            ).fetchall()
+        for row in rows:
+            deadline_text = row["item_expiry"] or row["end_time"]
+            if not deadline_text:
+                continue
+            try:
+                deadline = datetime.fromisoformat(deadline_text)
+            except ValueError:
+                continue
+            for moment, _, _ in self._slots_for(deadline, targets, now):
+                keys.add((row["id"], moment.isoformat(timespec="seconds")))
+        return keys
+
     def _remaining_text(
         self,
         kind: str,

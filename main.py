@@ -245,6 +245,12 @@ class JX3NewsKBPlugin(Star):
         """Whitelist entries usable as reminder destinations (full addresses)."""
         return len(ReminderTargets.from_config(self.config).as_pairs())
 
+    def valid_slot_keys(self) -> set[tuple[int, str]]:
+        """(activity_id, scheduled_at) pairs inside the current reminder windows."""
+        return self.scheduler.valid_slot_keys(
+            ReminderTargets.from_config(self.config)
+        )
+
     async def daily_job(self) -> dict[str, Any]:
         result = await self.fetch_and_ingest()
         self.scheduler.prune_logs()

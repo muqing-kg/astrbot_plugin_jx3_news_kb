@@ -111,7 +111,10 @@ function renderStats(data) {
         .map(
           ([target, items]) => `
           <div class="target-card">
-            <div class="target-name">${escapeHtml(target)}</div>
+            <div class="target-name">
+              <span>${escapeHtml(target)}</span>
+              <span class="target-count">${items.length}</span>
+            </div>
             ${items
               .map(
                 (item) => `
