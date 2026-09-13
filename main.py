@@ -295,8 +295,14 @@ class JX3NewsKBPlugin(Star):
         try:
             if self.db.count("announcements") == 0:
                 await self._run_daily_job_guarded()
+            # Re-create future reminder slots on every start so a mid-cycle
+            # update or restart does not miss today's remaining slots.
+            if bool(self.config.get("reminder_enabled", True)):
+                self.scheduler.create_pending_reminders(
+                    ReminderTargets.from_config(self.config)
+                )
         except Exception:  # noqa: BLE001 - the loop must survive startup races
-            logger.exception("initial fetch check failed")
+            logger.exception("startup fetch/schedule check failed")
         while True:
             delay = self._seconds_until(self._daily_fetch_time())
             logger.debug("next daily fetch in %.0f seconds", delay)
