@@ -223,7 +223,7 @@ class SchedulerService:
             success = True
         except Exception as exc:  # noqa: BLE001 - logged and surfaced via fetch_logs
             error = str(exc)[:500]
-            logger.error("fetch failed: %s", error)
+            logger.error("抓取失败：%s", error)
         finished_at = self.now()
         self._log_fetch(
             started_at, finished_at, success, chosen, returned, inserted,

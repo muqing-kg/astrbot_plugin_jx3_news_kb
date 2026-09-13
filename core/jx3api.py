@@ -34,7 +34,7 @@ class NewsClient:
     ) -> list[dict[str, Any]]:
         limit = int(limit)
         if limit < 1 or limit > 50:
-            raise JX3APIError("limit must be between 1 and 50")
+            raise JX3APIError("抓取条数必须在 1 到 50 之间")
 
         url = self.build_url(limit)
         headers = {"User-Agent": "AstrBot-JX3-News-KB/0.1"}
@@ -51,10 +51,10 @@ class NewsClient:
             async with session.get(url, headers=headers, params=params) as response:
                 if response.status != 200:
                     detail = await response.text()
-                    raise JX3APIError(f"HTTP {response.status}: {detail[:200]}")
+                    raise JX3APIError(f"HTTP {response.status}：{detail[:200]}")
                 payload: dict[str, Any] = await response.json()
         except aiohttp.ClientError as exc:
-            raise JX3APIError(f"request failed: {exc}") from exc
+            raise JX3APIError(f"请求失败：{exc}") from exc
         finally:
             if owns_session:
                 await session.close()
@@ -63,5 +63,5 @@ class NewsClient:
             raise JX3APIError(f"API error {payload.get('code')}: {payload.get('msg')}")
         data = payload.get("data")
         if not isinstance(data, list):
-            raise JX3APIError("API returned a non-list data field")
+            raise JX3APIError("接口返回的 data 字段不是列表")
         return [item for item in data if isinstance(item, dict)]

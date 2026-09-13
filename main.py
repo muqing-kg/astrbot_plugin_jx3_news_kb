@@ -115,11 +115,11 @@ class JX3NewsKBPlugin(Star):
             return None
         provider = self.context.get_provider_by_id(provider_id)
         if provider is None:
-            logger.warning("embedding provider %s not found", provider_id)
+            logger.warning("未找到 Embedding 提供商 %s", provider_id)
             return None
         if not hasattr(provider, "get_embeddings_batch"):
             logger.warning(
-                "provider %s does not support embeddings; vector recall disabled",
+                "提供商 %s 不支持向量接口，向量召回已禁用",
                 provider_id,
             )
             return None
@@ -131,7 +131,7 @@ class JX3NewsKBPlugin(Star):
             return None
         provider = self.context.get_provider_by_id(provider_id)
         if provider is None or not hasattr(provider, "rerank"):
-            logger.warning("reranker provider %s unavailable", provider_id)
+            logger.warning("Reranker 提供商 %s 不可用", provider_id)
             return None
         return provider
 
@@ -206,8 +206,8 @@ class JX3NewsKBPlugin(Star):
             try:
                 result = await handler(self, query, payload, **path_params)
             except Exception as exc:  # noqa: BLE001 - reported to the dashboard
-                logger.exception("web api %s failed", handler.__name__)
-                return error_response(f"internal error: {exc}", status_code=500)
+                logger.exception("Web 接口 %s 调用失败", handler.__name__)
+                return error_response(f"内部错误：{exc}", status_code=500)
             if isinstance(result, tuple) and len(result) == 2 and isinstance(result[1], int):
                 data, status = result
                 if status >= 400:
@@ -255,7 +255,7 @@ class JX3NewsKBPlugin(Star):
         """target_id is a full session address ``platform:MessageType:id``."""
         try:
             sent = await self.context.send_message(target_id, MessageChain().message(text))
-            return bool(sent), "" if sent else "no matching platform"
+            return bool(sent), "" if sent else "未找到匹配的消息平台"
         except Exception as exc:  # noqa: BLE001 - logged into reminder history
             return False, str(exc)
 
@@ -308,7 +308,7 @@ class JX3NewsKBPlugin(Star):
         self._background_tasks.append(
             asyncio.create_task(self._reminder_loop(), name="jx3-news-reminders")
         )
-        logger.info("JX3 news KB background tasks started")
+        logger.info("剑网3新闻公告知识库后台任务已启动")
 
     def background_alive(self) -> bool:
         return bool(self._background_tasks) and any(
@@ -333,7 +333,7 @@ class JX3NewsKBPlugin(Star):
                 else:
                     self.scheduler.create_pending_reminders(targets)
         except Exception:  # noqa: BLE001 - the loop must survive startup races
-            logger.exception("startup fetch/schedule check failed")
+            logger.exception("启动时抓取/提醒调度检查失败")
         while True:
             delay = self._seconds_until(self._daily_fetch_time())
             logger.debug("next daily fetch in %.0f seconds", delay)
@@ -344,9 +344,9 @@ class JX3NewsKBPlugin(Star):
         try:
             result = await self.daily_job()
             if not result.get("success"):
-                logger.warning("daily fetch failed: %s", result.get("error"))
+                logger.warning("每日抓取失败：%s", result.get("error"))
         except Exception:  # noqa: BLE001 - the loop must survive failures
-            logger.exception("daily job crashed")
+            logger.exception("每日任务异常终止")
 
     def _daily_fetch_time(self) -> str:
         return str(self.config.get("daily_fetch_time") or "00:00")
@@ -368,7 +368,7 @@ class JX3NewsKBPlugin(Star):
             try:
                 await self.send_due_reminders()
             except Exception:  # noqa: BLE001 - the loop must survive failures
-                logger.exception("reminder dispatch crashed")
+                logger.exception("提醒分发任务异常终止")
             await asyncio.sleep(REMINDER_LOOP_INTERVAL)
 
     async def terminate(self) -> None:
@@ -399,7 +399,7 @@ class JX3NewsKBPlugin(Star):
         try:
             relevant, answer = await self.qa.answer(question, event.unified_msg_origin)
         except Exception:  # noqa: BLE001 - never break the bot's main flow
-            logger.exception("qa pipeline failed")
+            logger.exception("问答流程执行失败")
             return
         if relevant and answer:
             await event.send(event.plain_result(answer))

@@ -135,7 +135,7 @@ async def handle_announcement_detail(
     try:
         announcement_id_int = int(announcement_id)
     except ValueError:
-        return {"error": "invalid id"}, 400
+        return {"error": "无效的 ID"}, 400
     with plugin.db.connect() as conn:
         row = conn.execute(
             """
@@ -147,7 +147,7 @@ async def handle_announcement_detail(
             (announcement_id_int,),
         ).fetchone()
         if row is None:
-            return {"error": "announcement not found"}, 404
+            return {"error": "未找到该公告"}, 404
         revisions = conn.execute(
             """
             SELECT id, revision_no, title, updated_at_source, content_hash, created_at
@@ -195,13 +195,13 @@ async def handle_announcement_delete(
     try:
         announcement_id_int = int(announcement_id)
     except ValueError:
-        return {"error": "invalid id"}, 400
+        return {"error": "无效的 ID"}, 400
     if payload.get("confirm") is not True:
-        return {"error": "missing confirmation"}, 400
+        return {"error": "缺少删除确认标志"}, 400
     pending = plugin.scheduler.cancel_reminders_for_announcement(announcement_id_int)
     deleted = plugin.ingest.hard_delete_announcement(announcement_id_int)
     if not deleted:
-        return {"error": "announcement not found"}, 404
+        return {"error": "未找到该公告"}, 404
     return {"deleted": True, "id": announcement_id_int, "cancelled_reminders": pending}
 
 
@@ -238,12 +238,12 @@ async def handle_activity_delete(
     try:
         activity_id_int = int(activity_id)
     except ValueError:
-        return {"error": "invalid id"}, 400
+        return {"error": "无效的 ID"}, 400
     with plugin.db.connect() as conn:
         cursor = conn.execute("DELETE FROM activities WHERE id = ?", (activity_id_int,))
         deleted = int(cursor.rowcount) > 0
     if not deleted:
-        return {"error": "activity not found"}, 404
+        return {"error": "未找到该活动"}, 404
     return {"deleted": True, "id": activity_id_int}
 
 
@@ -255,10 +255,10 @@ async def handle_fetch(
     except (TypeError, ValueError):
         limit = 0
     if limit < 1 or limit > 50:
-        return {"error": "limit must be between 1 and 50"}, 400
+        return {"error": "抓取条数必须在 1 到 50 之间"}, 400
     result = await plugin.fetch_and_ingest(limit)
     if not result.get("success"):
-        return {"error": result.get("error") or "fetch failed", "detail": result}, 502
+        return {"error": result.get("error") or "抓取失败", "detail": result}, 502
     extracted = await plugin.extract_and_schedule()
     result["activities_extracted"] = extracted
     return result
@@ -276,7 +276,7 @@ async def handle_rebuild_embeddings(
 ) -> tuple[dict[str, Any], int] | dict[str, Any]:
     provider = plugin.embedding_provider
     if provider is None:
-        return {"error": "embedding provider is not configured"}, 400
+        return {"error": "未配置 Embedding 提供商"}, 400
     with plugin.db.connect() as conn:
         cleared = int(
             conn.execute(
@@ -315,7 +315,7 @@ async def handle_reminders(
     status = str(query.get("status") or "pending").strip()
     allowed = {"pending", "sent", "cancelled", "failed", "all"}
     if status not in allowed:
-        return {"error": f"status must be one of {sorted(allowed)}"}, 400
+        return {"error": f"status 仅支持 {sorted(allowed)}"}, 400
     where = "" if status == "all" else " WHERE r.status = ?"
     params: list[Any] = [] if status == "all" else [status]
     with plugin.db.connect() as conn:

@@ -208,12 +208,12 @@ class IngestService:
             [row["content"] for row in rows]
         )
         if len(vectors) != len(rows):
-            raise RuntimeError("embedding provider returned an unexpected number of vectors")
+            raise RuntimeError("向量接口返回的向量数量与预期不符")
         dim = len(vectors[0])
         with self.db.connect() as conn:
             for row, vector in zip(rows, vectors, strict=True):
                 if len(vector) != dim:
-                    raise RuntimeError("embedding provider returned inconsistent dimensions")
+                    raise RuntimeError("向量接口返回的向量维度不一致")
                 conn.execute(
                     """
                     UPDATE chunks
