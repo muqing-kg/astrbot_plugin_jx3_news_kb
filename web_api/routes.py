@@ -62,6 +62,7 @@ async def handle_stats(plugin: Any, query: dict[str, Any], payload: dict[str, An
         "providers": probe,
         "reminder_enabled": bool(plugin.config.get("reminder_enabled", True)),
         "reminder_targets": int(plugin.reminder_target_count()),
+        "scheduler_alive": bool(plugin.background_alive()),
     }
 
 

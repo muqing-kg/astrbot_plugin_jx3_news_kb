@@ -45,6 +45,9 @@ class FakePlugin:
     def reminder_target_count(self) -> int:
         return 0
 
+    def background_alive(self) -> bool:
+        return True
+
 
 def _insert_announcement(
     plugin: FakePlugin, title="版本更新公告", url="https://example.com/a"

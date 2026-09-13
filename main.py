@@ -98,6 +98,7 @@ class JX3NewsKBPlugin(Star):
         self._background_tasks: list[asyncio.Task] = []
         self._provider_probe: dict[str, Any] | None = None
         self._register_routes()
+        self._try_start_background_tasks()
 
     # ---------- configuration helpers ----------
 
@@ -282,6 +283,20 @@ class JX3NewsKBPlugin(Star):
 
     @filter.on_astrbot_loaded()
     async def on_astrbot_loaded(self) -> None:
+        # Fires only on a full AstrBot cold boot; reloads re-enter via
+        # __init__ -> _try_start_background_tasks instead.
+        self._start_background_tasks()
+
+    def _try_start_background_tasks(self) -> None:
+        """Start the loops when constructed inside a running event loop.
+
+        AstrBot instantiates plugins asynchronously, so this covers plugin
+        install/update reloads where on_astrbot_loaded never fires.
+        """
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return  # constructed outside a loop (tests); the hook starts them
         self._start_background_tasks()
 
     def _start_background_tasks(self) -> None:
@@ -292,6 +307,12 @@ class JX3NewsKBPlugin(Star):
         )
         self._background_tasks.append(
             asyncio.create_task(self._reminder_loop(), name="jx3-news-reminders")
+        )
+        logger.info("JX3 news KB background tasks started")
+
+    def background_alive(self) -> bool:
+        return bool(self._background_tasks) and any(
+            not task.done() for task in self._background_tasks
         )
 
     async def _daily_loop(self) -> None:

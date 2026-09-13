@@ -145,12 +145,15 @@ class FakeEvent:
         self.stopped = True
 
 
-def _make_plugin(monkeypatch, tmp_path, config=None):
+def _make_plugin(monkeypatch, tmp_path, config=None, stub_client=False):
     _install_fake_astrbot(monkeypatch, tmp_path)
     for name in list(sys.modules):
         if name == "main" or (name.startswith("main.") if isinstance(name, str) else False):
             del sys.modules[name]
     import main as main_module
+
+    if stub_client:
+        main_module.NewsClient = lambda **kwargs: _StubClient()
 
     context = FakeContext()
     plugin = main_module.JX3NewsKBPlugin(context, config or {})
@@ -350,6 +353,19 @@ def test_background_tasks_start_and_terminate(monkeypatch, tmp_path):
     assert all(alive)
     assert finished
     assert plugin._background_tasks == []
+
+
+async def test_tasks_start_on_init_inside_running_loop(monkeypatch, tmp_path):
+    """AstrBot instantiates plugins in a running loop and never fires
+    on_astrbot_loaded on reload; the loops must start from __init__."""
+    main_module, plugin, _ = _make_plugin(monkeypatch, tmp_path, stub_client=True)
+    # Tasks are created synchronously during construction.
+    assert len(plugin._background_tasks) == 2
+    assert plugin.background_alive() is True
+    await asyncio.sleep(0.1)
+    assert plugin.background_alive() is True
+    await plugin.terminate()
+    assert plugin.background_alive() is False
 
 
 def test_plugin_loads_as_astrbot_package(monkeypatch, tmp_path):

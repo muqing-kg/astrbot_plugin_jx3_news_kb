@@ -68,6 +68,7 @@ function renderStats(data) {
     ["活动抽取", counts.activities],
     ["待发提醒", data.pending_reminders],
     ["提醒目标", data.reminder_targets ?? 0],
+    ["后台任务", data.scheduler_alive ? "运行中" : "未运行"],
     ["Embedding 维度", embedding.available ? (embedding.dim ?? "探测中") : "未启用"],
     ["Reranker", reranker.available ? "已启用" : "未启用"],
   ];
