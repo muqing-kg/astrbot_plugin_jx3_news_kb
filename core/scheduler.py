@@ -108,7 +108,9 @@ class ReminderTargets:
             days_before = 1
         send_time = str(config.get("reminder_send_time") or "10:00")
         evening_enabled = bool(config.get("reminder_evening_enabled", True))
-        evening_time = str(config.get("reminder_evening_time") or "").strip()
+        # Missing key falls back to the default; an explicit empty value
+        # still disables the evening reminder.
+        evening_time = str(config.get("reminder_evening_time", "21:00") or "").strip()
         urgent_enabled = bool(config.get("reminder_urgent_enabled", True))
         try:
             urgent_minutes = int(config.get("reminder_urgent_minutes", 60))

@@ -298,9 +298,15 @@ class JX3NewsKBPlugin(Star):
             # Re-create future reminder slots on every start so a mid-cycle
             # update or restart does not miss today's remaining slots.
             if bool(self.config.get("reminder_enabled", True)):
-                self.scheduler.create_pending_reminders(
-                    ReminderTargets.from_config(self.config)
-                )
+                targets = ReminderTargets.from_config(self.config)
+                if not targets.as_pairs():
+                    logger.warning(
+                        "到期提醒已启用，但白名单中没有可用的完整会话地址"
+                        "（平台ID:GroupMessage:群号 或 平台ID:FriendMessage:用户号），"
+                        "提醒不会发送"
+                    )
+                else:
+                    self.scheduler.create_pending_reminders(targets)
         except Exception:  # noqa: BLE001 - the loop must survive startup races
             logger.exception("startup fetch/schedule check failed")
         while True:

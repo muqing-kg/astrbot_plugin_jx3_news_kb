@@ -447,6 +447,11 @@ def test_from_config_clamps_and_disables():
     zero_minutes = ReminderTargets.from_config({"reminder_urgent_minutes": 0})
     assert zero_minutes.urgent_minutes == 0
 
+    # Missing evening key falls back to the default time, not to "disabled".
+    default_evening = ReminderTargets.from_config({})
+    assert default_evening.evening_time == "21:00"
+    assert default_evening.evening_enabled is True
+
     empty_evening = ReminderTargets.from_config({"reminder_evening_time": ""})
     assert empty_evening.evening_time == ""
 

@@ -82,6 +82,8 @@ def test_stats_counts_and_next_fetch(plugin):
     assert data["counts"]["announcements"] == 1
     assert data["next_fetch_at"].endswith("00:00:00+08:00")
     assert data["embedding_available"] is False
+    assert data["reminder_enabled"] is True
+    assert data["reminder_targets"] == 0  # FakePlugin whitelist is empty
 
 
 def test_announcement_list_search_and_pagination(plugin):

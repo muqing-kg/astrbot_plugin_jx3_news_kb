@@ -67,6 +67,7 @@ function renderStats(data) {
     ["向量数", counts.embeddings],
     ["活动抽取", counts.activities],
     ["待发提醒", data.pending_reminders],
+    ["提醒目标", data.reminder_targets ?? 0],
     ["Embedding 维度", embedding.available ? (embedding.dim ?? "探测中") : "未启用"],
     ["Reranker", reranker.available ? "已启用" : "未启用"],
   ];
@@ -90,7 +91,11 @@ function renderStats(data) {
     : "还没有抓取记录。首次安装后可点击“补抓最近 50 条”建立初始知识库。";
 
   const upcoming = data.upcoming_reminders || [];
-  $("upcoming-reminders").innerHTML = upcoming.length
+  const noTargets =
+    data.reminder_enabled && (data.reminder_targets ?? 0) === 0;
+  $("upcoming-reminders").innerHTML = noTargets
+    ? '<div class="hint danger">提醒已启用，但白名单中没有可用的完整会话地址，提醒不会发送。请在插件配置的群白名单中填写：平台ID:GroupMessage:群号（私聊为 平台ID:FriendMessage:用户号），保存后重载插件。</div>'
+    : upcoming.length
     ? upcoming
         .map(
           (item) => `
