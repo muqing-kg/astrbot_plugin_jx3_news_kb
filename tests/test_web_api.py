@@ -256,37 +256,53 @@ def test_fetch_route_validates_limit(plugin):
     assert plugin.fetch_calls == [10]
 
 
-def test_stats_upcoming_shows_next_slot_per_activity(plugin):
+def test_stats_upcoming_shows_only_next_48h(plugin):
+    from datetime import datetime as dt, timedelta as td
+    from zoneinfo import ZoneInfo as ZI
+
+    tz = ZI("Asia/Shanghai")
+    fixed_now = dt(2026, 9, 13, 15, 0, tzinfo=tz)
+
     announcement_id = _insert_announcement(plugin)
-    activity_id = _insert_future_activity(plugin)
-    plugin.config["reminder_days_before"] = 3
-    plugin.scheduler.create_pending_reminders(
-        ReminderTargets(sessions=[FULL_GROUP_SESSION], days_before=3)
+    deadline = (fixed_now + td(days=1)).replace(
+        hour=20, minute=0, second=0, microsecond=0
     )
-    # A stale row outside the current reminder windows.
+    activity_id = _insert_future_activity(
+        plugin, end_time=deadline.isoformat(timespec="seconds")
+    )
+    plugin.config["reminder_days_before"] = 1
+    # Pin the clock: deadline tomorrow 20:00 (Monday evening, not maintenance).
+    plugin.scheduler.now = lambda: fixed_now
+    plugin.scheduler.create_pending_reminders(
+        ReminderTargets(
+            sessions=[FULL_GROUP_SESSION], days_before=1, send_time="10:00"
+        )
+    )
+    # A slot far in the future and a stale row: neither is "recent".
     with plugin.db.connect() as conn:
         conn.execute(
             """
             INSERT INTO reminders(
                 activity_id, target_type, target_id, scheduled_at, message_text
             ) VALUES (?, 'group', 'fake:GroupMessage:10001',
-                      '2098-01-01T00:00:00+08:00', 'stale')
+                      '2026-10-02T10:00:00+08:00', 'far'),
+                     (?, 'group', 'fake:GroupMessage:10001',
+                      '2026-09-01T10:00:00+08:00', 'stale')
             """,
-            (activity_id,),
+            (activity_id, activity_id),
         )
 
     data = asyncio.run(routes.handle_stats(plugin, {}, {}))
     entries = [
         (row["name"], row["scheduled_at"][:16]) for row in data["upcoming_reminders"]
     ]
-    # One activity -> its NEXT countdown slot plus the maintenance evening
-    # slot; the rest of the countdown and the stale row are hidden.
+    # Only what will actually be pushed within the next 48 hours: tomorrow's
+    # daily slot and the urgent last call. Far-future and stale rows hidden.
     assert entries == [
-        ("签到领券", "2099-09-14T10:00"),
-        ("签到领券", "2099-09-16T21:00"),
+        ("签到领券", "2026-09-14T10:00"),
+        ("签到领券", "2026-09-14T19:00"),
     ]
-    # Stale row stays in the database, it is just not displayed.
-    assert data["pending_reminders"] == 5
+    assert data["pending_reminders"] == 4
 
 
 def test_rebuild_routes(plugin):

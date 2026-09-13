@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 PAGE_SIZE_DEFAULT = 20
@@ -53,11 +53,13 @@ async def handle_stats(plugin: Any, query: dict[str, Any], payload: dict[str, An
             """
         ).fetchall()
 
-    # Only show slots valid under the CURRENT reminder windows. Per activity
-    # and target, collapse the countdown to the next upcoming slot; evening
-    # and urgent slots are shown once each on top of it.
+    # Only show what will actually be pushed soon: slots within the next
+    # 48 hours (tomorrow's daily push, tonight's maintenance-evening push,
+    # the urgent last-call). Anything further out is not "recent".
     valid_slots = plugin.valid_slot_keys()
-    now_iso = plugin.scheduler.now().isoformat(timespec="seconds")
+    now_dt = plugin.scheduler.now()
+    now_iso = now_dt.isoformat(timespec="seconds")
+    window_end = now_dt + timedelta(hours=48)
     chosen: dict[tuple[int, str, str], dict[str, Any]] = {}
     for row in scheduled_reminders:
         key = (row["activity_id"], row["scheduled_at"])
@@ -71,7 +73,12 @@ async def handle_stats(plugin: Any, query: dict[str, Any], payload: dict[str, An
         if slot_key not in chosen or row["scheduled_at"] < chosen[slot_key]["scheduled_at"]:
             chosen[slot_key] = dict(row)
     upcoming_reminders = sorted(
-        chosen.values(), key=lambda r: r["scheduled_at"]
+        (
+            row
+            for row in chosen.values()
+            if datetime.fromisoformat(row["scheduled_at"]) <= window_end
+        ),
+        key=lambda r: r["scheduled_at"],
     )
 
     snapshot = plugin.scheduler.status_snapshot(
