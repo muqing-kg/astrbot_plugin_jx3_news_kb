@@ -53,14 +53,26 @@ async def handle_stats(plugin: Any, query: dict[str, Any], payload: dict[str, An
             """
         ).fetchall()
 
-    # Only show slots valid under the CURRENT reminder windows (countdown /
-    # maintenance evening / urgent); stale rows are hidden.
-    valid_keys = plugin.valid_slot_keys()
-    upcoming_reminders = [
-        dict(row)
-        for row in scheduled_reminders
-        if (row["activity_id"], row["scheduled_at"]) in valid_keys
-    ]
+    # Only show slots valid under the CURRENT reminder windows. Per activity
+    # and target, collapse the countdown to the next upcoming slot; evening
+    # and urgent slots are shown once each on top of it.
+    valid_slots = plugin.valid_slot_keys()
+    now_iso = plugin.scheduler.now().isoformat(timespec="seconds")
+    chosen: dict[tuple[int, str, str], dict[str, Any]] = {}
+    for row in scheduled_reminders:
+        key = (row["activity_id"], row["scheduled_at"])
+        kind = valid_slots.get(key)
+        if kind is None:
+            continue
+        if row["scheduled_at"] <= now_iso:
+            chosen[(row["activity_id"], row["target_id"], "due")] = dict(row)
+            continue
+        slot_key = (row["activity_id"], row["target_id"], kind)
+        if slot_key not in chosen or row["scheduled_at"] < chosen[slot_key]["scheduled_at"]:
+            chosen[slot_key] = dict(row)
+    upcoming_reminders = sorted(
+        chosen.values(), key=lambda r: r["scheduled_at"]
+    )
 
     snapshot = plugin.scheduler.status_snapshot(
         str(plugin.config.get("daily_fetch_time", "00:00"))

@@ -353,11 +353,11 @@ class SchedulerService:
 
     def valid_slot_keys(
         self, targets: ReminderTargets, now: datetime | None = None
-    ) -> set[tuple[int, str]]:
-        """(activity_id, scheduled_at) pairs valid under the current windows."""
+    ) -> dict[tuple[int, str], str]:
+        """(activity_id, scheduled_at) -> slot kind, valid under current windows."""
         if now is None:
             now = self.now()
-        keys: set[tuple[int, str]] = set()
+        keys: dict[tuple[int, str], str] = {}
         with self.db.connect() as conn:
             rows = conn.execute(
                 "SELECT id, item_expiry, end_time FROM activities"
@@ -370,8 +370,8 @@ class SchedulerService:
                 deadline = datetime.fromisoformat(deadline_text)
             except ValueError:
                 continue
-            for moment, _, _ in self._slots_for(deadline, targets, now):
-                keys.add((row["id"], moment.isoformat(timespec="seconds")))
+            for moment, kind, _ in self._slots_for(deadline, targets, now):
+                keys[(row["id"], moment.isoformat(timespec="seconds"))] = kind
         return keys
 
     def _remaining_text(

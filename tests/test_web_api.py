@@ -256,11 +256,12 @@ def test_fetch_route_validates_limit(plugin):
     assert plugin.fetch_calls == [10]
 
 
-def test_stats_upcoming_only_shows_current_window_rows(plugin):
+def test_stats_upcoming_shows_next_slot_per_activity(plugin):
     announcement_id = _insert_announcement(plugin)
     activity_id = _insert_future_activity(plugin)
+    plugin.config["reminder_days_before"] = 3
     plugin.scheduler.create_pending_reminders(
-        ReminderTargets(sessions=[FULL_GROUP_SESSION])
+        ReminderTargets(sessions=[FULL_GROUP_SESSION], days_before=3)
     )
     # A stale row outside the current reminder windows.
     with plugin.db.connect() as conn:
@@ -275,10 +276,17 @@ def test_stats_upcoming_only_shows_current_window_rows(plugin):
         )
 
     data = asyncio.run(routes.handle_stats(plugin, {}, {}))
-    times = [row["scheduled_at"] for row in data["upcoming_reminders"]]
-    assert times and all(t.startswith("2099-09-16") for t in times)
+    entries = [
+        (row["name"], row["scheduled_at"][:16]) for row in data["upcoming_reminders"]
+    ]
+    # One activity -> its NEXT countdown slot plus the maintenance evening
+    # slot; the rest of the countdown and the stale row are hidden.
+    assert entries == [
+        ("签到领券", "2099-09-14T10:00"),
+        ("签到领券", "2099-09-16T21:00"),
+    ]
     # Stale row stays in the database, it is just not displayed.
-    assert data["pending_reminders"] == 3
+    assert data["pending_reminders"] == 5
 
 
 def test_rebuild_routes(plugin):
