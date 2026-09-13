@@ -273,33 +273,23 @@ def test_slots_urgent_disabled(tmp_path):
     assert [kind for _, kind, _ in slots] == ["countdown", "countdown"]
 
 
-def test_slots_slot_missed_beyond_grace_is_dropped(tmp_path):
+def test_slots_past_slots_are_never_scheduled(tmp_path):
+    """Missed slots are dropped, never re-dispatched."""
     scheduler = _make_scheduler(tmp_path)
     deadline = datetime(2026, 9, 17, 7, 0, tzinfo=TZ)
-    # D-1 slot was 09-16 10:00, now is 20:00 — 10 hours late, beyond grace.
-    now = datetime(2026, 9, 16, 20, 0, tzinfo=TZ)
     targets = ReminderTargets(
         sessions=["fake:GroupMessage:10001"], days_before=1, send_time="10:00"
     )
-    slots = scheduler._slots_for(deadline, targets, now)
-    # Only the evening slot (21:00, still ahead) survives.
+    # D-1 slot (09-16 10:00) passed 20 minutes ago; it must be dropped.
+    slots = scheduler._slots_for(deadline, targets, datetime(2026, 9, 16, 10, 20, tzinfo=TZ))
     assert [(m.strftime("%H:%M"), kind) for m, kind, _ in slots] == [
         ("21:00", "evening")
     ]
-
-
-def test_slots_slot_within_grace_is_kept(tmp_path):
-    scheduler = _make_scheduler(tmp_path)
-    deadline = datetime(2026, 9, 17, 7, 0, tzinfo=TZ)
-    now = datetime(2026, 9, 16, 10, 20, tzinfo=TZ)
-    targets = ReminderTargets(
-        sessions=["fake:GroupMessage:10001"], days_before=1, send_time="10:00"
-    )
-    slots = scheduler._slots_for(deadline, targets, now)
-    assert any(
-        m == datetime(2026, 9, 16, 10, 0, tzinfo=TZ) and kind == "countdown"
-        for m, kind, _ in slots
-    )
+    # 10 hours later only the evening slot remains, for the same reason.
+    slots = scheduler._slots_for(deadline, targets, datetime(2026, 9, 16, 20, 0, tzinfo=TZ))
+    assert [(m.strftime("%H:%M"), kind) for m, kind, _ in slots] == [
+        ("21:00", "evening")
+    ]
 
 
 def test_remaining_text_variants(tmp_path):

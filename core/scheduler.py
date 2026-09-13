@@ -18,9 +18,6 @@ logger = logging.getLogger(__name__)
 # A gap longer than this since the last successful fetch means announcements
 # were missed and a large catch-up fetch is needed.
 CATCHUP_THRESHOLD = timedelta(hours=36)
-# A scheduled slot reached within this grace period is still dispatched by the
-# reminder loop; only older slots are treated as expired and dropped.
-DISPATCH_GRACE = timedelta(hours=6)
 # Fetch and reminder logs older than this are pruned by the daily job.
 LOG_RETENTION_DAYS = 7
 
@@ -302,11 +299,8 @@ class SchedulerService:
             moment = datetime(
                 day.year, day.month, day.day, hour, minute, tzinfo=deadline.tzinfo
             )
-            if moment >= deadline:
-                continue
-            kept = self._keep(moment, now)
-            if kept:
-                slots.append((kept, "countdown", days))
+            if deadline > moment > now:
+                slots.append((moment, "countdown", days))
 
         if maintenance and targets.evening_enabled and targets.evening_time:
             hour, minute = self._parse_send_time(targets.evening_time)
@@ -314,9 +308,8 @@ class SchedulerService:
             moment = datetime(
                 day.year, day.month, day.day, hour, minute, tzinfo=deadline.tzinfo
             )
-            kept = self._keep(moment, now)
-            if kept:
-                slots.append((kept, "evening", 0))
+            if moment > now:
+                slots.append((moment, "evening", 0))
 
         if (
             targets.urgent_enabled
@@ -324,9 +317,8 @@ class SchedulerService:
             and not maintenance
         ):
             moment = deadline - timedelta(minutes=targets.urgent_minutes)
-            kept = self._keep(moment, now)
-            if kept:
-                slots.append((kept, "urgent", 0))
+            if moment > now:
+                slots.append((moment, "urgent", 0))
 
         # An urgent slot earlier than the same-day countdown slot replaces it.
         urgent_by_date = {m.date(): m for m, kind, _ in slots if kind == "urgent"}
@@ -384,15 +376,6 @@ class SchedulerService:
         return (
             f"剩余时间：{noun}将于{self._humanize_minutes(urgent_minutes)}后{verb}"
         )
-
-    @staticmethod
-    def _keep(moment: datetime, now: datetime) -> datetime | None:
-        """Keep future slots and slots just reached within the dispatch grace."""
-        if moment > now:
-            return moment
-        if now - moment <= DISPATCH_GRACE:
-            return moment
-        return None
 
     def create_pending_reminders(
         self, targets: ReminderTargets, announcement_ids: list[int] | None = None
@@ -572,7 +555,6 @@ class SchedulerService:
 
 __all__ = [
     "CATCHUP_THRESHOLD",
-    "DISPATCH_GRACE",
     "LOG_RETENTION_DAYS",
     "MAINTENANCE_DEADLINE_BEFORE",
     "MAINTENANCE_WEEKDAYS",
