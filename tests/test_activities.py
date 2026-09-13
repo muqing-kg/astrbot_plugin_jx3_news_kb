@@ -180,7 +180,7 @@ async def test_extract_skips_unworthy_and_stores_times(db):
         assert row["end_time"] == "2026-09-17T07:00:00+08:00"
 
 
-def test_reminder_message_contains_activity_name_and_deadline(db):
+def test_reminder_message_template(db):
     announcement_id = _insert_announcement(db)
     with db.connect() as conn:
         cursor = conn.execute(
@@ -209,9 +209,23 @@ def test_reminder_message_contains_activity_name_and_deadline(db):
             (activity_id,),
         ).fetchone()
 
-    message = ActivityService(db).reminder_message(row)
-    assert "【签到领校服拓印券 到期提醒】" in message
-    assert "待办：使用免费校服拓印券" in message
-    assert "2026-09-17 07:00" in message
-    assert "券到期后会消失" in message
+    service = ActivityService(db)
+    message = service.reminder_message(
+        row, "剩余时间：1 天，该活动将于明天结束"
+    )
+    assert "【签到领校服拓印券 结束提醒】" in message
+    assert "待办事项：使用免费校服拓印券" in message
+    assert "相关物品：校服任选拓印券" in message
+    assert "说明：券到期后会消失" in message
+    assert "剩余时间：1 天，该活动将于明天结束" in message
     assert "链接：" in message
+    assert "券/道具消失" not in message
+    assert "活动：" not in message
+
+    item_row = dict(row)
+    item_row["item_expiry"] = "2026-09-17T07:00:00+08:00"
+    item_message = service.reminder_message(
+        item_row, "剩余时间：1 天，该道具将于明天到期"
+    )
+    assert "【签到领校服拓印券 到期提醒】" in item_message
+    assert "剩余时间：1 天，该道具将于明天到期" in item_message

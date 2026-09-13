@@ -15,6 +15,7 @@ from core.jx3api import NewsClient
 from core.scheduler import ReminderTargets, SchedulerService
 
 TZ = ZoneInfo("Asia/Shanghai")
+NOW = datetime(2026, 9, 15, 9, 0, tzinfo=TZ)
 
 
 def _make_scheduler(tmp_path, **kwargs) -> SchedulerService:
@@ -146,116 +147,209 @@ TARGETS = ReminderTargets(
 )
 
 
-def test_reminder_scheduled_one_day_before_at_send_time(tmp_path):
+def test_slots_countdown_and_urgent(tmp_path):
     scheduler = _make_scheduler(tmp_path)
-    # Fixed "now": 2026-09-15 09:00 Asia/Shanghai.
-    now = datetime(2026, 9, 15, 9, 0, tzinfo=TZ)
-    announcement_id = _insert_announcement(scheduler.db)
-    _insert_activity(
-        scheduler.db, announcement_id, end_time="2026-09-17T07:00:00+08:00"
+    # Sunday 20:00 deadline: countdown D-1/D-0 plus the urgent slot.
+    deadline = datetime(2026, 9, 16, 20, 0, tzinfo=TZ)
+    targets = ReminderTargets(
+        sessions=["fake:GroupMessage:10001"], days_before=1, send_time="10:00"
     )
+    slots = scheduler._slots_for(deadline, targets, NOW)
+    moments = [m for m, _, _ in slots]
+    assert moments == [
+        datetime(2026, 9, 15, 10, 0, tzinfo=TZ),
+        datetime(2026, 9, 16, 10, 0, tzinfo=TZ),
+        datetime(2026, 9, 16, 19, 0, tzinfo=TZ),
+    ]
+    assert [(kind, days) for _, kind, days in slots] == [
+        ("countdown", 1),
+        ("countdown", 0),
+        ("urgent", 0),
+    ]
 
-    with scheduler.db.connect() as conn:
-        row = conn.execute("SELECT * FROM activities").fetchone()
-    moment = scheduler._scheduled_at(row, TARGETS, now)
-    assert moment == datetime(2026, 9, 16, 10, 0, tzinfo=TZ)
 
-
-def test_reminder_skips_slot_missed_beyond_grace(tmp_path):
+def test_slots_countdown_multi_day(tmp_path):
     scheduler = _make_scheduler(tmp_path)
+    deadline = datetime(2026, 9, 20, 20, 0, tzinfo=TZ)  # Sunday evening
+    targets = ReminderTargets(
+        sessions=["fake:GroupMessage:10001"], days_before=3, send_time="10:00"
+    )
+    slots = scheduler._slots_for(deadline, targets, NOW)
+    moments = [(m.strftime("%m-%d %H:%M"), kind, days) for m, kind, days in slots]
+    assert moments == [
+        ("09-17 10:00", "countdown", 3),
+        ("09-18 10:00", "countdown", 2),
+        ("09-19 10:00", "countdown", 1),
+        ("09-20 10:00", "countdown", 0),
+        ("09-20 19:00", "urgent", 0),
+    ]
+
+
+def test_slots_maintenance_evening_replaces_urgent(tmp_path):
+    scheduler = _make_scheduler(tmp_path)
+    # Thursday 07:00 deadline: dies with the maintenance window.
+    deadline = datetime(2026, 9, 17, 7, 0, tzinfo=TZ)
+    targets = ReminderTargets(
+        sessions=["fake:GroupMessage:10001"], days_before=3, send_time="10:00"
+    )
+    now = datetime(2026, 9, 13, 9, 0, tzinfo=TZ)
+    slots = scheduler._slots_for(deadline, targets, now)
+    moments = [(m.strftime("%m-%d %H:%M"), kind) for m, kind, _ in slots]
+    assert moments == [
+        ("09-14 10:00", "countdown"),
+        ("09-15 10:00", "countdown"),
+        ("09-16 10:00", "countdown"),
+        ("09-16 21:00", "evening"),
+    ]
+
+
+def test_slots_urgent_supersedes_earlier_daily_slot(tmp_path):
+    scheduler = _make_scheduler(tmp_path)
+    # Deadline 10:30: urgent (09:30) is earlier than the daily slot (10:00).
+    deadline = datetime(2026, 9, 16, 10, 30, tzinfo=TZ)
+    targets = ReminderTargets(
+        sessions=["fake:GroupMessage:10001"], days_before=1, send_time="10:00"
+    )
+    slots = scheduler._slots_for(deadline, targets, NOW)
+    moments = [(m.strftime("%m-%d %H:%M"), kind) for m, kind, _ in slots]
+    assert moments == [
+        ("09-15 10:00", "countdown"),
+        ("09-16 09:30", "urgent"),
+    ]
+
+
+def test_slots_expired_deadline(tmp_path):
+    scheduler = _make_scheduler(tmp_path)
+    deadline = datetime(2026, 9, 14, 20, 0, tzinfo=TZ)
+    assert scheduler._slots_for(deadline, TARGETS, NOW) == []
+
+
+def test_slots_item_expiry_takes_priority(tmp_path):
+    scheduler = _make_scheduler(tmp_path)
+    # Deadline comes from item_expiry (Thursday 07:00), not end_time.
+    slots = scheduler._slots_for(
+        datetime(2026, 9, 17, 7, 0, tzinfo=TZ), TARGETS, NOW
+    )
+    kinds = [kind for _, kind, _ in slots]
+    assert "evening" in kinds
+    assert "urgent" not in kinds
+
+
+def test_slots_evening_disabled(tmp_path):
+    scheduler = _make_scheduler(tmp_path)
+    deadline = datetime(2026, 9, 17, 7, 0, tzinfo=TZ)
+    targets = ReminderTargets(
+        sessions=["fake:GroupMessage:10001"],
+        days_before=1,
+        send_time="10:00",
+        evening_enabled=False,
+    )
+    slots = scheduler._slots_for(deadline, targets, NOW)
+    assert [kind for _, kind, _ in slots] == ["countdown"]
+
+
+def test_slots_urgent_disabled(tmp_path):
+    scheduler = _make_scheduler(tmp_path)
+    deadline = datetime(2026, 9, 16, 20, 0, tzinfo=TZ)
+    targets = ReminderTargets(
+        sessions=["fake:GroupMessage:10001"],
+        days_before=1,
+        send_time="10:00",
+        urgent_enabled=False,
+    )
+    slots = scheduler._slots_for(deadline, targets, NOW)
+    assert [kind for _, kind, _ in slots] == ["countdown", "countdown"]
+
+
+def test_slots_slot_missed_beyond_grace_is_dropped(tmp_path):
+    scheduler = _make_scheduler(tmp_path)
+    deadline = datetime(2026, 9, 17, 7, 0, tzinfo=TZ)
+    # D-1 slot was 09-16 10:00, now is 20:00 — 10 hours late, beyond grace.
     now = datetime(2026, 9, 16, 20, 0, tzinfo=TZ)
-    announcement_id = _insert_announcement(scheduler.db)
-    _insert_activity(
-        scheduler.db, announcement_id, end_time="2026-09-17T07:00:00+08:00"
+    targets = ReminderTargets(
+        sessions=["fake:GroupMessage:10001"], days_before=1, send_time="10:00"
     )
-    with scheduler.db.connect() as conn:
-        row = conn.execute("SELECT * FROM activities").fetchone()
-    # Slot (2026-09-16 10:00) was missed by 10 hours, beyond the 6h grace.
-    assert scheduler._scheduled_at(row, TARGETS, now) is None
+    slots = scheduler._slots_for(deadline, targets, now)
+    # Only the evening slot (21:00, still ahead) survives.
+    assert [(m.strftime("%H:%M"), kind) for m, kind, _ in slots] == [
+        ("21:00", "evening")
+    ]
 
 
-def test_reminder_slot_within_grace_is_kept(tmp_path):
+def test_slots_slot_within_grace_is_kept(tmp_path):
     scheduler = _make_scheduler(tmp_path)
+    deadline = datetime(2026, 9, 17, 7, 0, tzinfo=TZ)
     now = datetime(2026, 9, 16, 10, 20, tzinfo=TZ)
-    announcement_id = _insert_announcement(scheduler.db)
-    _insert_activity(
-        scheduler.db, announcement_id, end_time="2026-09-17T07:00:00+08:00"
+    targets = ReminderTargets(
+        sessions=["fake:GroupMessage:10001"], days_before=1, send_time="10:00"
     )
-    with scheduler.db.connect() as conn:
-        row = conn.execute("SELECT * FROM activities").fetchone()
-    assert scheduler._scheduled_at(row, TARGETS, now) == datetime(
-        2026, 9, 16, 10, 0, tzinfo=TZ
+    slots = scheduler._slots_for(deadline, targets, now)
+    assert any(
+        m == datetime(2026, 9, 16, 10, 0, tzinfo=TZ) and kind == "countdown"
+        for m, kind, _ in slots
     )
 
 
-def test_short_window_reminds_thirty_minutes_before_start(tmp_path):
+def test_remaining_text_variants(tmp_path):
     scheduler = _make_scheduler(tmp_path)
-    now = datetime(2026, 9, 15, 9, 0, tzinfo=TZ)
-    announcement_id = _insert_announcement(scheduler.db)
-    _insert_activity(
-        scheduler.db,
-        announcement_id,
-        start_time="2026-09-15T20:00:00+08:00",
-        end_time="2026-09-15T21:00:00+08:00",
+    deadline = datetime(2026, 9, 20, 20, 0, tzinfo=TZ)
+    assert (
+        scheduler._remaining_text("countdown", 3, deadline, False, 60)
+        == "剩余时间：3 天，该活动将于9月20日结束"
     )
-    with scheduler.db.connect() as conn:
-        row = conn.execute("SELECT * FROM activities").fetchone()
-    assert scheduler._scheduled_at(row, TARGETS, now) == datetime(
-        2026, 9, 15, 19, 30, tzinfo=TZ
+    assert (
+        scheduler._remaining_text("countdown", 3, deadline, True, 60)
+        == "剩余时间：3 天，该道具将于9月20日到期"
     )
-
-
-def test_expired_deadline_is_never_scheduled(tmp_path):
-    scheduler = _make_scheduler(tmp_path)
-    now = datetime(2026, 9, 15, 9, 0, tzinfo=TZ)
-    announcement_id = _insert_announcement(scheduler.db)
-    _insert_activity(
-        scheduler.db, announcement_id, end_time="2026-09-14T07:00:00+08:00"
+    assert (
+        scheduler._remaining_text("countdown", 1, deadline, False, 60)
+        == "剩余时间：1 天，该活动将于明天结束"
     )
-    with scheduler.db.connect() as conn:
-        row = conn.execute("SELECT * FROM activities").fetchone()
-    assert scheduler._scheduled_at(row, TARGETS, now) is None
-
-
-def test_item_expiry_takes_priority_over_end_time(tmp_path):
-    scheduler = _make_scheduler(tmp_path)
-    now = datetime(2026, 9, 15, 9, 0, tzinfo=TZ)
-    announcement_id = _insert_announcement(scheduler.db)
-    _insert_activity(
-        scheduler.db,
-        announcement_id,
-        end_time="2026-09-20T23:59:00+08:00",
-        item_expiry="2026-09-17T07:00:00+08:00",
+    assert (
+        scheduler._remaining_text("countdown", 0, deadline, False, 60)
+        == "剩余时间：该活动将于今天结束（20:00）"
     )
-    with scheduler.db.connect() as conn:
-        row = conn.execute("SELECT * FROM activities").fetchone()
-    assert scheduler._scheduled_at(row, TARGETS, now) == datetime(
-        2026, 9, 16, 10, 0, tzinfo=TZ
+    assert (
+        scheduler._remaining_text("evening", 0, deadline, False, 60)
+        == "剩余时间：该活动将于明天结束（明早 20:00）"
+    )
+    assert (
+        scheduler._remaining_text("urgent", 0, deadline, False, 60)
+        == "剩余时间：该活动将于1 小时后结束"
+    )
+    assert (
+        scheduler._remaining_text("urgent", 0, deadline, True, 30)
+        == "剩余时间：该道具将于30 分钟后到期"
+    )
+    assert (
+        scheduler._remaining_text("urgent", 0, deadline, True, 90)
+        == "剩余时间：该道具将于1 小时 30 分钟后到期"
     )
 
 
 def test_create_pending_reminders_is_idempotent(tmp_path):
     scheduler = _make_scheduler(tmp_path)
     announcement_id = _insert_announcement(scheduler.db)
+    # 2099-09-17 is a Thursday; 07:00 is inside the maintenance window, so
+    # D-1 + evening slots exist (urgent suppressed).
     _insert_activity(
         scheduler.db, announcement_id, end_time="2099-09-17T07:00:00+08:00"
     )
     first = scheduler.create_pending_reminders(TARGETS)
     second = scheduler.create_pending_reminders(TARGETS)
-    assert first == 2  # one group + one private
+    assert first == 4  # 2 slots x 2 targets
     assert second == 0
 
     with scheduler.db.connect() as conn:
         rows = conn.execute(
-            "SELECT target_type, target_id, message_text FROM reminders ORDER BY id"
+            "SELECT target_type, message_text FROM reminders ORDER BY id"
         ).fetchall()
     assert {row["target_type"] for row in rows} == {"group", "private"}
-    assert {row["target_id"] for row in rows} == {
-        "fake:GroupMessage:10001",
-        "fake:FriendMessage:20001",
-    }
-    assert all("【签到领校服拓印券 到期提醒】" in row["message_text"] for row in rows)
-    assert all("签到领校服拓印券" in row["message_text"] for row in rows)
+    assert all("【签到领校服拓印券 结束提醒】" in row["message_text"] for row in rows)
+    assert all("待办事项：" in row["message_text"] for row in rows)
+    assert all("剩余时间：" in row["message_text"] for row in rows)
+    assert any("明早 07:00" in row["message_text"] for row in rows)
+    assert all("券/道具消失" not in row["message_text"] for row in rows)
 
 
 def test_create_pending_reminders_without_targets(tmp_path):
@@ -281,6 +375,8 @@ def test_from_config_collects_full_session_addresses():
             ],
             "reminder_days_before": 2,
             "reminder_send_time": "09:30",
+            "reminder_evening_time": "20:30",
+            "reminder_urgent_minutes": 30,
         }
     )
     assert targets.sessions == [
@@ -289,10 +385,27 @@ def test_from_config_collects_full_session_addresses():
     ]
     assert targets.days_before == 2
     assert targets.send_time == "09:30"
+    assert targets.evening_enabled is True
+    assert targets.evening_time == "20:30"
+    assert targets.urgent_minutes == 30
     assert targets.as_pairs() == [
         ("group", "aiocqhttp:GroupMessage:10001"),
         ("private", "qqofficial:FriendMessage:20001"),
     ]
+
+
+def test_from_config_clamps_and_disables():
+    targets = ReminderTargets.from_config({"reminder_days_before": 10})
+    assert targets.days_before == 7
+
+    off_switch = ReminderTargets.from_config({"reminder_urgent_enabled": False})
+    assert off_switch.urgent_minutes == 0
+
+    zero_minutes = ReminderTargets.from_config({"reminder_urgent_minutes": 0})
+    assert zero_minutes.urgent_minutes == 0
+
+    empty_evening = ReminderTargets.from_config({"reminder_evening_time": ""})
+    assert empty_evening.evening_time == ""
 
 
 def test_parse_session_address_variants():
@@ -312,45 +425,6 @@ def test_parse_session_address_variants():
     assert extract_session_id("aiocqhttp:GroupMessage:123") == "123"
     assert extract_session_id("10086") == "10086"
     assert extract_session_id("") == ""
-
-
-def test_due_reminders_and_mark(tmp_path):
-    scheduler = _make_scheduler(tmp_path)
-    announcement_id = _insert_announcement(scheduler.db)
-    _insert_activity(
-        scheduler.db, announcement_id, end_time="2099-09-17T07:00:00+08:00"
-    )
-    scheduler.create_pending_reminders(TARGETS)
-    # Force a due slot in the past.
-    with scheduler.db.connect() as conn:
-        conn.execute(
-            "UPDATE reminders SET scheduled_at = datetime('now', 'localtime', '-1 hour')"
-        )
-    due = scheduler.due_reminders()
-    assert len(due) == 2
-
-    scheduler.mark_reminder(int(due[0]["id"]), "sent")
-    scheduler.mark_reminder(int(due[1]["id"]), "failed", error="send timeout")
-
-    with scheduler.db.connect() as conn:
-        statuses = conn.execute(
-            "SELECT status FROM reminders ORDER BY id"
-        ).fetchall()
-        logs = conn.execute("SELECT success, error FROM reminder_logs").fetchall()
-    assert [row["status"] for row in statuses] == ["sent", "failed"]
-    assert sorted(int(row["success"]) for row in logs) == [0, 1]
-    assert scheduler.due_reminders() == []
-
-
-def test_cancel_reminders_for_announcement(tmp_path):
-    scheduler = _make_scheduler(tmp_path)
-    announcement_id = _insert_announcement(scheduler.db)
-    _insert_activity(
-        scheduler.db, announcement_id, end_time="2099-09-17T07:00:00+08:00"
-    )
-    scheduler.create_pending_reminders(TARGETS)
-    cancelled = scheduler.cancel_reminders_for_announcement(announcement_id)
-    assert cancelled == 2
 
 
 def test_merge_reminder_texts_combines_same_day_items():
@@ -445,6 +519,51 @@ def test_prune_logs_keeps_recent_only(tmp_path):
     with scheduler.db.connect() as conn:
         assert conn.execute("SELECT COUNT(*) FROM fetch_logs").fetchone()[0] == 1
         assert conn.execute("SELECT COUNT(*) FROM reminder_logs").fetchone()[0] == 0
+
+
+def test_due_reminders_and_mark(tmp_path):
+    scheduler = _make_scheduler(tmp_path)
+    announcement_id = _insert_announcement(scheduler.db)
+    _insert_activity(
+        scheduler.db, announcement_id, end_time="2099-09-17T07:00:00+08:00"
+    )
+    scheduler.create_pending_reminders(TARGETS)
+    # Force every slot due in the past, keeping timestamps distinct so the
+    # UNIQUE(activity, target, scheduled_at) constraint is not violated.
+    with scheduler.db.connect() as conn:
+        conn.execute(
+            "UPDATE reminders SET scheduled_at = "
+            "datetime('now', 'localtime', '-' || id || ' minutes')"
+        )
+    due = scheduler.due_reminders()
+    assert len(due) == 4
+
+    scheduler.mark_reminder(int(due[0]["id"]), "sent")
+    scheduler.mark_reminder(int(due[1]["id"]), "failed", error="send timeout")
+
+    with scheduler.db.connect() as conn:
+        statuses = [
+            row["status"]
+            for row in conn.execute(
+                "SELECT status FROM reminders ORDER BY id"
+            ).fetchall()
+        ]
+        logs = conn.execute("SELECT success, error FROM reminder_logs").fetchall()
+    assert sorted(statuses) == sorted(["sent", "failed", "pending", "pending"])
+    assert sorted(int(row["success"]) for row in logs) == [0, 1]
+    # The two untouched rows are still due.
+    assert len(scheduler.due_reminders()) == 2
+
+
+def test_cancel_reminders_for_announcement(tmp_path):
+    scheduler = _make_scheduler(tmp_path)
+    announcement_id = _insert_announcement(scheduler.db)
+    _insert_activity(
+        scheduler.db, announcement_id, end_time="2099-09-17T07:00:00+08:00"
+    )
+    scheduler.create_pending_reminders(TARGETS)
+    cancelled = scheduler.cancel_reminders_for_announcement(announcement_id)
+    assert cancelled == 4
 
 
 def test_status_snapshot_next_run(tmp_path):

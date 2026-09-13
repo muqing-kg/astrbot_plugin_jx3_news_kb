@@ -264,23 +264,18 @@ class ActivityService:
             )
         return [item for item in activities if item.name]
 
-    def reminder_message(self, row: Any) -> str:
-        deadline = row["item_expiry"] or row["end_time"]
-        deadline_type = "券/道具消失" if row["item_expiry"] else "活动/领取截止"
-        item_text = f"\n相关物品：{row['item_name']}" if row["item_name"] else ""
-        explanation = f"\n说明：{row['explanation']}" if row["explanation"] else ""
-        return (
-            f"【{row['name']} 到期提醒】\n"
-            f"待办：{row['action'] or '请及时处理'}\n"
-            f"{deadline_type}：{format_deadline(deadline)}{item_text}{explanation}\n"
-            f"链接：{row['url']}"
-        )
-
-
-def format_deadline(value: str | None) -> str:
-    """Render an ISO timestamp as 'YYYY-MM-DD HH:MM'; pass through on failure."""
-    value = str(value or "").strip()
-    try:
-        return datetime.fromisoformat(value).strftime("%Y-%m-%d %H:%M")
-    except ValueError:
-        return value
+    def reminder_message(self, row: Any, remaining: str = "") -> str:
+        """Render one reminder; ``remaining`` is the ``剩余时间：`` line."""
+        suffix = "到期提醒" if row["item_expiry"] else "结束提醒"
+        lines = [
+            f"【{row['name']} {suffix}】",
+            f"待办事项：{row['action'] or '请及时处理'}",
+        ]
+        if row["item_name"]:
+            lines.append(f"相关物品：{row['item_name']}")
+        if row["explanation"]:
+            lines.append(f"说明：{row['explanation']}")
+        if remaining:
+            lines.append(remaining)
+        lines.append(f"链接：{row['url']}")
+        return "\n".join(lines)

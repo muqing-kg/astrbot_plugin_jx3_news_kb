@@ -171,7 +171,7 @@ def test_delete_removes_everything_and_tombstones(plugin):
     data = asyncio.run(routes.handle_announcement_delete(
         plugin, {}, {"confirm": True}, str(announcement_id)
     ))
-    assert data == {"deleted": True, "id": announcement_id, "cancelled_reminders": 2}
+    assert data == {"deleted": True, "id": announcement_id, "cancelled_reminders": 4}
 
     assert plugin.db.count("announcements") == 0
     assert plugin.db.count("chunks") == 0
@@ -219,7 +219,7 @@ def test_activity_delete_removes_reminders_without_confirmation(plugin):
     plugin.scheduler.create_pending_reminders(
         ReminderTargets(sessions=[FULL_GROUP_SESSION])
     )
-    assert plugin.db.count("reminders") == 1
+    assert plugin.db.count("reminders") == 2
 
     data = asyncio.run(routes.handle_activity_delete(
         plugin, {}, {}, str(activity_id)
@@ -280,7 +280,7 @@ def test_reminders_route_filters_by_status(plugin):
     )
     pending = asyncio.run(routes.handle_reminders(plugin, {}, {}))
     assert pending["status"] == "pending"
-    assert len(pending["items"]) == 1
+    assert len(pending["items"]) == 2
     assert pending["items"][0]["activity_name"] == "签到领券"
 
     bad = asyncio.run(routes.handle_reminders(plugin, {"status": "nope"}, {}))

@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, time as dtime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from .activities import ActivityService, format_deadline
+from .activities import ActivityService
 from .database import Database
 from .ingest import IngestService
 from .jx3api import NewsClient
@@ -18,13 +18,16 @@ logger = logging.getLogger(__name__)
 # A gap longer than this since the last successful fetch means announcements
 # were missed and a large catch-up fetch is needed.
 CATCHUP_THRESHOLD = timedelta(hours=36)
-SHORT_WINDOW = timedelta(hours=24)
-SHORT_WINDOW_REMIND_BEFORE = timedelta(minutes=30)
 # A scheduled slot reached within this grace period is still dispatched by the
 # reminder loop; only older slots are treated as expired and dropped.
 DISPATCH_GRACE = timedelta(hours=6)
 # Fetch and reminder logs older than this are pruned by the daily job.
 LOG_RETENTION_DAYS = 7
+
+# Activities ending on Monday/Thursday morning die with the weekly maintenance;
+# the last useful reminder is the previous evening.
+MAINTENANCE_WEEKDAYS = (0, 3)
+MAINTENANCE_DEADLINE_BEFORE = dtime(12, 0)
 
 LINK_PREFIX = "链接："
 
@@ -78,6 +81,10 @@ class ReminderTargets:
     sessions: list[str]
     days_before: int = 1
     send_time: str = "10:00"
+    evening_enabled: bool = True
+    evening_time: str = "21:00"
+    urgent_enabled: bool = True
+    urgent_minutes: int = 60
 
     def as_pairs(self) -> list[tuple[str, str]]:
         pairs = []
@@ -96,11 +103,29 @@ class ReminderTargets:
             if parsed is not None:
                 sessions.append(parsed[1])
         try:
-            days_before = max(0, int(config.get("reminder_days_before", 1)))
+            days_before = max(0, min(7, int(config.get("reminder_days_before", 1))))
         except (TypeError, ValueError):
             days_before = 1
         send_time = str(config.get("reminder_send_time") or "10:00")
-        return cls(sessions=sessions, days_before=days_before, send_time=send_time)
+        evening_enabled = bool(config.get("reminder_evening_enabled", True))
+        evening_time = str(config.get("reminder_evening_time") or "").strip()
+        urgent_enabled = bool(config.get("reminder_urgent_enabled", True))
+        try:
+            urgent_minutes = int(config.get("reminder_urgent_minutes", 60))
+        except (TypeError, ValueError):
+            urgent_minutes = 60
+        if urgent_minutes < 0:
+            urgent_minutes = 0
+        if not urgent_enabled:
+            urgent_minutes = 0
+        return cls(
+            sessions=sessions,
+            days_before=days_before,
+            send_time=send_time,
+            evening_enabled=evening_enabled,
+            evening_time=evening_time,
+            urgent_minutes=urgent_minutes,
+        )
 
 
 MESSAGE_TYPE_TO_SCOPE = {
@@ -252,47 +277,111 @@ class SchedulerService:
             return 10, 0
         return hour, minute
 
-    def _scheduled_at(
-        self, row: Any, targets: ReminderTargets, now: datetime
-    ) -> datetime | None:
-        """Reminder time for one activity row, or None when not reminder-worthy."""
-        end_time = row["end_time"] or ""
-        item_expiry = row["item_expiry"] or ""
-        start_time = row["start_time"] or ""
-        deadline_text = item_expiry or end_time
-        if not deadline_text:
-            return None
-        try:
-            deadline = datetime.fromisoformat(deadline_text)
-        except ValueError:
-            return None
+    def _slots_for(
+        self, deadline: datetime, targets: ReminderTargets, now: datetime
+    ) -> list[tuple[datetime, str, int]]:
+        """All reminder moments for one deadline as (moment, kind, days).
+
+        Kinds: ``countdown`` (days counts down to 0), ``evening`` (the night
+        before a Monday/Thursday morning deadline) and ``urgent`` (minutes
+        before the deadline).
+        """
         if deadline <= now:
-            return None
-
-        # Short windows (e.g. a queue that opens for one hour) would be over
-        # before a "one day ahead" reminder; remind shortly after it opens.
-        if start_time and end_time:
-            try:
-                start = datetime.fromisoformat(start_time)
-                end = datetime.fromisoformat(end_time)
-                if end > start and end - start < SHORT_WINDOW:
-                    moment = start - SHORT_WINDOW_REMIND_BEFORE
-                    return self._keep(moment, now)
-            except ValueError:
-                pass
-
-        hour, minute = self._parse_send_time(targets.send_time)
-        send_day = deadline.date() - timedelta(days=targets.days_before)
-        moment = datetime(
-            send_day.year, send_day.month, send_day.day, hour, minute,
-            tzinfo=deadline.tzinfo,
+            return []
+        maintenance = (
+            deadline.weekday() in MAINTENANCE_WEEKDAYS
+            and deadline.time() < MAINTENANCE_DEADLINE_BEFORE
         )
-        # The window between the scheduled slot and the deadline (e.g. the
-        # default 10:00 slot for a 07:00 deadline) must still be in the future.
-        if moment >= deadline:
-            previous = send_day - timedelta(days=1)
-            moment = moment.replace(year=previous.year, month=previous.month, day=previous.day)
-        return self._keep(moment, now)
+        slots: list[tuple[datetime, str, int]] = []
+
+        for days in range(targets.days_before, -1, -1):
+            day = deadline.date() - timedelta(days=days)
+            hour, minute = self._parse_send_time(targets.send_time)
+            moment = datetime(
+                day.year, day.month, day.day, hour, minute, tzinfo=deadline.tzinfo
+            )
+            if moment >= deadline:
+                continue
+            kept = self._keep(moment, now)
+            if kept:
+                slots.append((kept, "countdown", days))
+
+        if maintenance and targets.evening_enabled and targets.evening_time:
+            hour, minute = self._parse_send_time(targets.evening_time)
+            day = deadline.date() - timedelta(days=1)
+            moment = datetime(
+                day.year, day.month, day.day, hour, minute, tzinfo=deadline.tzinfo
+            )
+            kept = self._keep(moment, now)
+            if kept:
+                slots.append((kept, "evening", 0))
+
+        if (
+            targets.urgent_enabled
+            and targets.urgent_minutes > 0
+            and not maintenance
+        ):
+            moment = deadline - timedelta(minutes=targets.urgent_minutes)
+            kept = self._keep(moment, now)
+            if kept:
+                slots.append((kept, "urgent", 0))
+
+        # An urgent slot earlier than the same-day countdown slot replaces it.
+        urgent_by_date = {m.date(): m for m, kind, _ in slots if kind == "urgent"}
+        slots = [
+            (m, kind, days)
+            for m, kind, days in slots
+            if not (
+                kind == "countdown"
+                and m.date() in urgent_by_date
+                and urgent_by_date[m.date()] < m
+            )
+        ]
+
+        unique: list[tuple[datetime, str, int]] = []
+        seen: set[str] = set()
+        for moment, kind, days in sorted(slots, key=lambda s: s[0]):
+            key = moment.isoformat()
+            if key in seen:
+                continue
+            seen.add(key)
+            unique.append((moment, kind, days))
+        return unique
+
+    @staticmethod
+    def _humanize_minutes(minutes: int) -> str:
+        if minutes < 60:
+            return f"{minutes} 分钟"
+        hours, rest = divmod(minutes, 60)
+        if rest == 0:
+            return f"{hours} 小时"
+        return f"{hours} 小时 {rest} 分钟"
+
+    def _remaining_text(
+        self,
+        kind: str,
+        days: int,
+        deadline: datetime,
+        is_item: bool,
+        urgent_minutes: int,
+    ) -> str:
+        """The ``剩余时间：`` line, worded per reminder kind and target class."""
+        noun = "该道具" if is_item else "该活动"
+        verb = "到期" if is_item else "结束"
+        if kind == "countdown":
+            if days == 0:
+                return f"剩余时间：{noun}将于今天{verb}（{deadline:%H:%M}）"
+            if days == 1:
+                return f"剩余时间：1 天，{noun}将于明天{verb}"
+            return (
+                f"剩余时间：{days} 天，{noun}将于"
+                f"{deadline.month}月{deadline.day}日{verb}"
+            )
+        if kind == "evening":
+            return f"剩余时间：{noun}将于明天{verb}（明早 {deadline:%H:%M}）"
+        return (
+            f"剩余时间：{noun}将于{self._humanize_minutes(urgent_minutes)}后{verb}"
+        )
 
     @staticmethod
     def _keep(moment: datetime, now: datetime) -> datetime | None:
@@ -329,24 +418,33 @@ class SchedulerService:
             rows = conn.execute(query, params).fetchall()
             created = 0
             for row in rows:
-                moment = self._scheduled_at(row, targets, now)
-                if moment is None:
+                deadline_text = row["item_expiry"] or row["end_time"]
+                if not deadline_text:
                     continue
-                message = self.activities.reminder_message(row)
-                for target_type, target_id in pairs:
-                    cursor = conn.execute(
-                        """
-                        INSERT OR IGNORE INTO reminders(
-                            activity_id, target_type, target_id,
-                            scheduled_at, message_text
-                        ) VALUES (?, ?, ?, ?, ?)
-                        """,
-                        (
-                            row["id"], target_type, target_id,
-                            moment.isoformat(timespec="seconds"), message,
-                        ),
+                try:
+                    deadline = datetime.fromisoformat(deadline_text)
+                except ValueError:
+                    continue
+                is_item = bool(row["item_expiry"])
+                for moment, kind, days in self._slots_for(deadline, targets, now):
+                    remaining = self._remaining_text(
+                        kind, days, deadline, is_item, targets.urgent_minutes
                     )
-                    created += int(cursor.rowcount > 0)
+                    message = self.activities.reminder_message(row, remaining)
+                    for target_type, target_id in pairs:
+                        cursor = conn.execute(
+                            """
+                            INSERT OR IGNORE INTO reminders(
+                                activity_id, target_type, target_id,
+                                scheduled_at, message_text
+                            ) VALUES (?, ?, ?, ?, ?)
+                            """,
+                            (
+                                row["id"], target_type, target_id,
+                                moment.isoformat(timespec="seconds"), message,
+                            ),
+                        )
+                        created += int(cursor.rowcount > 0)
         return created
 
     def due_reminders(self, limit: int = 50) -> list[dict[str, Any]]:
@@ -453,13 +551,12 @@ __all__ = [
     "CATCHUP_THRESHOLD",
     "DISPATCH_GRACE",
     "LOG_RETENTION_DAYS",
-    "SHORT_WINDOW",
-    "SHORT_WINDOW_REMIND_BEFORE",
+    "MAINTENANCE_DEADLINE_BEFORE",
+    "MAINTENANCE_WEEKDAYS",
     "MESSAGE_TYPE_TO_SCOPE",
     "ReminderTargets",
     "SchedulerService",
     "extract_session_id",
-    "format_deadline",
     "merge_reminder_texts",
     "parse_session_address",
 ]

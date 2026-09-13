@@ -26,11 +26,13 @@
 
 提醒规则：
 
-- 默认提前 1 天、每天 `10:00` 发送（`reminder_days_before` 0–3 可调）。
-- 同一目标同一天到期的多项提醒合并为一条消息发送。
-- 活动窗口不足 24 小时的（如短时间开放的资格申请），在开始前 30 分钟提醒。
+- 逐日倒计时：`reminder_days_before`（0–7，默认 1）表示提前几天开始，每天在 `reminder_send_time` 推送一次、天数递减；消息带"剩余时间"行（如"剩余时间：3 天，该活动将于9月20日结束"）。
+- 维护日规则：截止时间在周一或周四中午 12 点前的活动随维护结束，最后一条提醒改在前一晚 `reminder_evening_time`（默认 21:00，`reminder_evening_enabled` 开关、留空时间亦可关闭），文案为"明早 07:00"样式。
+- 临期加推：截止前 `reminder_urgent_minutes` 分钟（默认 60，`reminder_urgent_enabled` 开关）推送最后提醒；若该时刻早于当天常规提醒则只发这条；维护日早截止的活动不发。
+- 短窗口活动（不足 24 小时）不再特殊处理，统一走以上规则，入库前已流逝的时刻自动跳过。
+- 同一目标同一天的多条提醒合并为一条消息发送；提醒按活动/道具区分措辞（"【XX 结束提醒】/【XX 到期提醒】"）。
 - 发送目标使用白名单里的完整会话地址（`平台ID:GroupMessage:群号` 或 `平台ID:FriendMessage:用户号`）；白名单里的纯群号/用户号只用于问答过滤，不作为提醒目标。
-- 提醒内容包含活动名、待办、截止时间、说明、来源公告标题/日期与链接。
+- 提醒内容包含活动名、待办事项、相关物品、说明、剩余时间与链接。
 
 ### WebUI 管理页
 
@@ -59,8 +61,12 @@
 | `embedding_provider_id` | 空 | 向量召回，留空只用全文检索 |
 | `reranker_provider_id` | 空 | 重排序，失败自动降级 |
 | `reminder_enabled` | true | 是否启用提醒 |
-| `reminder_days_before` | 1 | 提前提醒天数（0 为当天） |
-| `reminder_send_time` | `10:00` | 提醒发送时间 |
+| `reminder_days_before` | 1 | 提前几天开始逐日倒计时提醒（0–7） |
+| `reminder_send_time` | `10:00` | 每日倒计时提醒推送时间 |
+| `reminder_evening_enabled` | true | 维护日前一晚提醒开关 |
+| `reminder_evening_time` | `21:00` | 维护日前一晚推送时间（留空关闭） |
+| `reminder_urgent_enabled` | true | 临期加推开关 |
+| `reminder_urgent_minutes` | 60 | 截止前多少分钟加推（0 关闭） |
 
 插件不做聊天命令。只有真实唤醒的消息（唤醒前缀、@机器人、引用回复或私聊，即 `event.is_at_or_wake_command`）才会进入问答判断，无关消息放行，不影响原有流程。
 
