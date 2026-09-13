@@ -42,6 +42,9 @@ class FakePlugin:
             "reranker": {"available": False, "provider_id": ""},
         }
 
+    def reminder_target_count(self) -> int:
+        return 0
+
 
 def _insert_announcement(
     plugin: FakePlugin, title="版本更新公告", url="https://example.com/a"
@@ -287,3 +290,17 @@ def test_reminders_route_filters_by_status(plugin):
 
     bad = asyncio.run(routes.handle_reminders(plugin, {"status": "nope"}, {}))
     assert bad[1] == 400
+
+
+def test_routes_module_has_no_core_import():
+    """routes.py is executed inside the plugin package at runtime; a top-level
+    core import breaks AstrBot's package loading (regression guard for an
+    environment difference local tests cannot catch)."""
+    from pathlib import Path
+
+    source = (
+        Path(__file__).resolve().parent.parent / "web_api" / "routes.py"
+    ).read_text(encoding="utf-8")
+    for line in source.splitlines():
+        if line.startswith(("import ", "from ")):
+            assert not line.startswith(("from core", "import core")), line

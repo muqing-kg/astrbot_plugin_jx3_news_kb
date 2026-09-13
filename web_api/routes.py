@@ -10,8 +10,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from core.scheduler import ReminderTargets
-
 PAGE_SIZE_DEFAULT = 20
 PAGE_SIZE_MAX = 100
 
@@ -54,7 +52,6 @@ async def handle_stats(plugin: Any, query: dict[str, Any], payload: dict[str, An
         str(plugin.config.get("daily_fetch_time", "00:00"))
     )
     probe = await plugin.probe_providers()
-    targets = ReminderTargets.from_config(plugin.config)
     return {
         "counts": counts,
         "pending_reminders": pending,
@@ -64,7 +61,7 @@ async def handle_stats(plugin: Any, query: dict[str, Any], payload: dict[str, An
         "embedding_available": probe["embedding"]["available"],
         "providers": probe,
         "reminder_enabled": bool(plugin.config.get("reminder_enabled", True)),
-        "reminder_targets": len(targets.as_pairs()),
+        "reminder_targets": int(plugin.reminder_target_count()),
     }
 
 

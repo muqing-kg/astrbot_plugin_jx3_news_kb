@@ -7,7 +7,7 @@ desc: |
   - 混合检索问答：全文（FTS5）+ 向量召回 + 可选 Reranker，回答逐句核对公告原文并自动标注来源，无依据的数字与编造名称会被剔除。
   - 活动到期提醒：逐日倒计时（可提前 0–7 天）、周一/周四维护日截止改前一晚提醒、截止前临期加推；活动/道具措辞自动区分，同日多条合并推送。
   - WebUI 管理页：公告检索与详情、彻底删除（含指纹墓碑）、倒计时提醒管理、抓取日志，支持亮暗主题。
-version: 1.3.4
+version: 1.3.5
 author: muqing
 repo: https://github.com/muqing-kg/astrbot_plugin_jx3_news_kb
 tags:

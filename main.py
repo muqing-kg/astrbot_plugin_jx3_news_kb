@@ -237,6 +237,10 @@ class JX3NewsKBPlugin(Star):
             self.scheduler.create_pending_reminders(targets, announcement_ids)
         return created
 
+    def reminder_target_count(self) -> int:
+        """Whitelist entries usable as reminder destinations (full addresses)."""
+        return len(ReminderTargets.from_config(self.config).as_pairs())
+
     async def daily_job(self) -> dict[str, Any]:
         result = await self.fetch_and_ingest()
         self.scheduler.prune_logs()
