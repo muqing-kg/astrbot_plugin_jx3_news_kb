@@ -83,7 +83,7 @@ function renderStats(data) {
         `开始：${fmtDateTime(last.started_at)}`,
         `结果：${Number(last.success) === 1 ? "成功" : "失败"}`,
         `抓取条数：${last.fetch_limit}，入库 ${last.inserted_count}，修订 ${last.revised_count}，跳过 ${last.skipped_count}`,
-        last.error ? `错误：${last.error}` : "",
+        last.error ? `错误：${escapeHtml(last.error)}` : "",
       ]
         .filter(Boolean)
         .join("<br />")

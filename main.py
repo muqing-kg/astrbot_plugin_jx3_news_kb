@@ -292,8 +292,11 @@ class JX3NewsKBPlugin(Star):
 
     async def _daily_loop(self) -> None:
         # Fresh install: build the initial knowledge base right away.
-        if self.db.count("announcements") == 0:
-            await self._run_daily_job_guarded()
+        try:
+            if self.db.count("announcements") == 0:
+                await self._run_daily_job_guarded()
+        except Exception:  # noqa: BLE001 - the loop must survive startup races
+            logger.exception("initial fetch check failed")
         while True:
             delay = self._seconds_until(self._daily_fetch_time())
             logger.debug("next daily fetch in %.0f seconds", delay)
@@ -332,9 +335,12 @@ class JX3NewsKBPlugin(Star):
             await asyncio.sleep(REMINDER_LOOP_INTERVAL)
 
     async def terminate(self) -> None:
-        for task in self._background_tasks:
-            task.cancel()
+        tasks = list(self._background_tasks)
         self._background_tasks.clear()
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     # ---------- message handling ----------
 

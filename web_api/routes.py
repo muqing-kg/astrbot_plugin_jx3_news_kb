@@ -38,7 +38,7 @@ async def handle_stats(plugin: Any, query: dict[str, Any], payload: dict[str, An
         scheduled_reminders = conn.execute(
             """
             SELECT r.id, r.target_type, r.target_id, r.scheduled_at, r.status,
-                   a.name, an.title, an.url,
+                   a.name, an.title AS announcement_title, an.url,
                    date(an.published_at) AS announcement_date
             FROM reminders r
             JOIN activities a ON a.id = r.activity_id
@@ -83,8 +83,8 @@ async def handle_announcements(
     clauses: list[str] = []
     params: list[Any] = []
     if keyword:
-        clauses.append("(a.title LIKE ? OR a.content_text LIKE ?)")
-        like = f"%{keyword}%"
+        like = f"%{keyword.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')}%"
+        clauses.append("(a.title LIKE ? ESCAPE '\\' OR a.content_text LIKE ? ESCAPE '\\')")
         params.extend([like, like])
     if announcement_type:
         clauses.append("a.type = ?")

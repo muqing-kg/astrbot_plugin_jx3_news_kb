@@ -224,15 +224,27 @@ def test_slots_expired_deadline(tmp_path):
     assert scheduler._slots_for(deadline, TARGETS, NOW) == []
 
 
-def test_slots_item_expiry_takes_priority(tmp_path):
+def test_create_pending_uses_item_expiry_over_end_time(tmp_path):
+    """deadline = item_expiry || end_time: the item expiry wins when both exist."""
     scheduler = _make_scheduler(tmp_path)
-    # Deadline comes from item_expiry (Thursday 07:00), not end_time.
-    slots = scheduler._slots_for(
-        datetime(2026, 9, 17, 7, 0, tzinfo=TZ), TARGETS, NOW
+    announcement_id = _insert_announcement(scheduler.db)
+    _insert_activity(
+        scheduler.db,
+        announcement_id,
+        end_time="2099-12-31T23:59:00+08:00",
+        item_expiry="2099-09-17T07:00:00+08:00",
     )
-    kinds = [kind for _, kind, _ in slots]
-    assert "evening" in kinds
-    assert "urgent" not in kinds
+    scheduler.create_pending_reminders(TARGETS)
+
+    with scheduler.db.connect() as conn:
+        rows = conn.execute(
+            "SELECT scheduled_at, message_text FROM reminders"
+        ).fetchall()
+    # Reminders anchor to the September item deadline, not the December end.
+    assert len(rows) == 4
+    assert all("2099-09-16" in row["scheduled_at"] for row in rows)
+    assert all("【签到领校服拓印券 到期提醒】" in row["message_text"] for row in rows)
+    assert all("2099-12-31" not in row["message_text"] for row in rows)
 
 
 def test_slots_evening_disabled(tmp_path):
@@ -561,11 +573,20 @@ def test_due_reminders_and_mark(tmp_path):
     scheduler.create_pending_reminders(TARGETS)
     # Force every slot due in the past, keeping timestamps distinct so the
     # UNIQUE(activity, target, scheduled_at) constraint is not violated.
+    # Timestamps are computed in the scheduler timezone (never the machine's).
     with scheduler.db.connect() as conn:
-        conn.execute(
-            "UPDATE reminders SET scheduled_at = "
-            "datetime('now', 'localtime', '-' || id || ' minutes')"
-        )
+        ids = [
+            row["id"]
+            for row in conn.execute("SELECT id FROM reminders").fetchall()
+        ]
+        for index, reminder_id in enumerate(ids, start=1):
+            past = (scheduler.now() - timedelta(minutes=index)).isoformat(
+                timespec="seconds"
+            )
+            conn.execute(
+                "UPDATE reminders SET scheduled_at = ? WHERE id = ?",
+                (past, reminder_id),
+            )
     due = scheduler.due_reminders()
     assert len(due) == 4
 

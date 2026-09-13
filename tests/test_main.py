@@ -7,6 +7,7 @@ import importlib
 import shutil
 import sys
 import types
+from datetime import timedelta
 from typing import Any
 
 
@@ -250,14 +251,16 @@ def test_send_due_reminders_marks_sent(monkeypatch, tmp_path):
             (announcement_id,),
         )
         activity_id = cursor.lastrowid
+        past = (
+            plugin.scheduler.now() - timedelta(minutes=1)
+        ).isoformat(timespec="seconds")
         conn.execute(
             """
             INSERT INTO reminders(
                 activity_id, target_type, target_id, scheduled_at, message_text
-            ) VALUES (?, 'group', 'fake:GroupMessage:10001',
-                      datetime('now', 'localtime', '-1 minute'), '提醒内容')
+            ) VALUES (?, 'group', 'fake:GroupMessage:10001', ?, '提醒内容')
             """,
-            (activity_id,),
+            (activity_id, past),
         )
 
     sent = asyncio.run(plugin.send_due_reminders())
@@ -295,14 +298,16 @@ def test_send_due_reminders_merges_same_target(monkeypatch, tmp_path):
                 """,
                 (announcement_id, name),
             )
+            past = (
+                plugin.scheduler.now() - timedelta(minutes=1)
+            ).isoformat(timespec="seconds")
             conn.execute(
                 """
                 INSERT INTO reminders(
                     activity_id, target_type, target_id, scheduled_at, message_text
-                ) VALUES (?, 'group', 'fake:GroupMessage:10001',
-                          datetime('now', 'localtime', '-1 minute'), ?)
+                ) VALUES (?, 'group', 'fake:GroupMessage:10001', ?, ?)
                 """,
-                (cursor.lastrowid, f"【{name} 到期提醒】\n待办：使用"),
+                (cursor.lastrowid, past, f"【{name} 到期提醒】\n待办：使用"),
             )
 
     sent = asyncio.run(plugin.send_due_reminders())
