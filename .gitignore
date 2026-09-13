@@ -8,3 +8,8 @@ __pycache__/
 
 # local working notes
 work/
+# internal workflow docs
+/docs/superpowers/
+
+# local memory notes
+.recallloom/
