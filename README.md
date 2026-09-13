@@ -1,5 +1,7 @@
 # astrbot_plugin_jx3_news_kb
 
+![logo](logo.png)
+
 剑网3新闻公告知识库插件。抓取 JX3API 官方公告与新闻到本地 SQLite 知识库，提供混合检索问答、活动到期提醒和 WebUI 管理页。
 
 ## 功能
