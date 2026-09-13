@@ -66,7 +66,7 @@ function renderStats(data) {
     ["文本分块", counts.chunks],
     ["向量数", counts.embeddings],
     ["活动抽取", counts.activities],
-    ["待发提醒", data.pending_reminders],
+    ["待发提醒（条）", data.pending_reminders],
     ["提醒目标", data.reminder_targets ?? 0],
     ["后台任务", data.scheduler_alive ? "运行中" : "未运行"],
     ["Embedding 维度", embedding.available ? (embedding.dim ?? "探测中") : "未启用"],
@@ -94,20 +94,38 @@ function renderStats(data) {
   const upcoming = data.upcoming_reminders || [];
   const noTargets =
     data.reminder_enabled && (data.reminder_targets ?? 0) === 0;
-  $("upcoming-reminders").innerHTML = noTargets
-    ? '<div class="hint danger">提醒已启用，但白名单中没有可用的完整会话地址，提醒不会发送。请在插件配置的群白名单中填写：平台ID:GroupMessage:群号（私聊为 平台ID:FriendMessage:用户号），保存后重载插件。</div>'
-    : upcoming.length
-    ? upcoming
+  if (noTargets) {
+    $("upcoming-reminders").innerHTML =
+      '<div class="hint danger">提醒已启用，但白名单中没有可用的完整会话地址，提醒不会发送。请在插件配置的群白名单中填写：平台ID:GroupMessage:群号（私聊为 平台ID:FriendMessage:用户号），保存后重载插件。</div>';
+  } else if (!upcoming.length) {
+    $("upcoming-reminders").innerHTML = '<div class="muted">暂无待发提醒。</div>';
+  } else {
+    const groups = new Map();
+    for (const item of upcoming) {
+      if (!groups.has(item.target_id)) groups.set(item.target_id, []);
+      groups.get(item.target_id).push(item);
+    }
+    $("upcoming-reminders").innerHTML =
+      '<div class="target-grid">' +
+      [...groups.entries()]
         .map(
-          (item) => `
-            <div class="reminder-item">
-              <span class="name">${escapeHtml(item.name)}</span>
-              <span class="tag">${escapeHtml(item.target_id)}</span>
-              <div class="muted">计划发送：${fmtDateTime(item.scheduled_at)}　来源：${escapeHtml(item.announcement_title || "")}</div>
-            </div>`,
+          ([target, items]) => `
+          <div class="target-card">
+            <div class="target-name">${escapeHtml(target)}</div>
+            ${items
+              .map(
+                (item) => `
+                <div class="target-item">
+                  <div>${escapeHtml(item.name)}</div>
+                  <div class="muted">${fmtDateTime(item.scheduled_at)}</div>
+                </div>`,
+              )
+              .join("")}
+          </div>`,
         )
-        .join("")
-    : '<div class="muted">暂无待发提醒。</div>';
+        .join("") +
+      "</div>";
+  }
 }
 
 async function loadStats() {

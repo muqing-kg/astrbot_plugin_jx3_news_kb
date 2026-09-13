@@ -200,3 +200,27 @@ input[type="search"], input[type="text"], select {
 
 details { margin-top: 10px; }
 summary { cursor: pointer; color: var(--muted); }
+
+.target-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+@media (max-width: 900px) {
+  .target-grid { grid-template-columns: 1fr; }
+}
+.target-card {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  align-self: start;
+}
+.target-name {
+  font-weight: 600;
+  font-size: 12px;
+  word-break: break-all;
+  padding-bottom: 6px;
+  margin-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+}
+.target-item { padding: 3px 0; }

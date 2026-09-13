@@ -45,7 +45,7 @@ async def handle_stats(plugin: Any, query: dict[str, Any], payload: dict[str, An
             JOIN announcements an ON an.id = a.announcement_id
             WHERE r.status = 'pending'
             ORDER BY r.scheduled_at
-            LIMIT 20
+            LIMIT 200
             """
         ).fetchall()
     snapshot = plugin.scheduler.status_snapshot(
