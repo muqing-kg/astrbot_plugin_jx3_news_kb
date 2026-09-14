@@ -185,26 +185,64 @@ class ActivityService:
         for row in rows:
             activities = await self._extract_one(provider, row)
             with self.db.connect() as conn:
-                conn.execute(
-                    "DELETE FROM activities WHERE announcement_id = ?", (row["id"],)
-                )
+                # Re-extraction updates existing rows in place so activity ids
+                # stay stable: a changing id would invalidate the reminders
+                # UNIQUE constraint and let duplicate reminders pile up.
+                existing = {
+                    r["name"]: r["id"]
+                    for r in conn.execute(
+                        "SELECT id, name FROM activities WHERE announcement_id = ?",
+                        (row["id"],),
+                    ).fetchall()
+                }
                 for activity in activities:
-                    conn.execute(
-                        """
-                        INSERT INTO activities(
-                            announcement_id, name, action, category, start_time,
-                            end_time, item_expiry, item_name, explanation,
-                            evidence, confidence
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            row["id"], activity.name, activity.action, activity.category,
-                            activity.start_time, activity.end_time, activity.item_expiry,
-                            activity.item_name, activity.explanation, activity.evidence,
-                            activity.confidence,
-                        ),
+                    values = (
+                        row["id"], activity.name, activity.action, activity.category,
+                        activity.start_time, activity.end_time, activity.item_expiry,
+                        activity.item_name, activity.explanation, activity.evidence,
+                        activity.confidence,
                     )
-                    created += 1
+                    old_id = existing.get(activity.name)
+                    if old_id is not None:
+                        conn.execute(
+                            """
+                            UPDATE activities
+                            SET action = ?, category = ?,
+                                start_time = ?, end_time = ?, item_expiry = ?,
+                                item_name = ?, explanation = ?, evidence = ?,
+                                confidence = ?, modified_at =
+                                    datetime('now', 'localtime')
+                            WHERE id = ?
+                            """,
+                            (*values[2:], old_id),
+                        )
+                    else:
+                        conn.execute(
+                            """
+                            INSERT INTO activities(
+                                announcement_id, name, action, category, start_time,
+                                end_time, item_expiry, item_name, explanation,
+                                evidence, confidence
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            """,
+                            values,
+                        )
+                        created += 1
+                # Activities that no longer appear in the re-extracted text go
+                # away together with their pending reminders.
+                keep_ids = ",".join(
+                    "?" for _ in range(len(activities))
+                ) or "NULL"
+                if activities:
+                    conn.execute(
+                        f"DELETE FROM activities WHERE announcement_id = ? AND name NOT IN ({keep_ids})",
+                        (row["id"], *[a.name for a in activities]),
+                    )
+                else:
+                    conn.execute(
+                        "DELETE FROM activities WHERE announcement_id = ?",
+                        (row["id"],),
+                    )
                 conn.execute(
                     """
                     UPDATE announcements

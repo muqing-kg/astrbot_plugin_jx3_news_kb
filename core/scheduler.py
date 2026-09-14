@@ -424,27 +424,24 @@ class SchedulerService:
 
         with self.db.connect() as conn:
             rows = conn.execute(query, params).fetchall()
-            # Re-scheduling replaces stale future slots so a config change
-            # (push time, countdown days, ...) takes effect without leftovers.
-            now_iso = now.isoformat(timespec="seconds")
+            # Re-scheduling replaces ALL pending slots (not just future ones):
+            # a config change takes effect immediately and a missed slot is
+            # never re-dispatched.
             if announcement_ids:
                 marks = ",".join("?" for _ in announcement_ids)
                 conn.execute(
                     f"""
                     DELETE FROM reminders
-                    WHERE status = 'pending' AND scheduled_at > ?
+                    WHERE status = 'pending'
                       AND activity_id IN (
                           SELECT id FROM activities
                           WHERE announcement_id IN ({marks})
                       )
                     """,
-                    [now_iso, *announcement_ids],
+                    list(announcement_ids),
                 )
             else:
-                conn.execute(
-                    "DELETE FROM reminders WHERE status = 'pending' AND scheduled_at > ?",
-                    (now_iso,),
-                )
+                conn.execute("DELETE FROM reminders WHERE status = 'pending'")
             created = 0
             for row in rows:
                 deadline_text = row["item_expiry"] or row["end_time"]

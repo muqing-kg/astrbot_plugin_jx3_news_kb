@@ -141,6 +141,61 @@ def _insert_announcement(db, title="版本更新公告", content="活动内容",
         return int(cursor.lastrowid)
 
 
+@pytest.mark.asyncio()
+async def test_reextract_updates_in_place_without_id_change(db):
+    """Re-extracting the same announcement must keep activity ids stable so
+    the reminders UNIQUE constraint keeps preventing duplicates."""
+    announcement_id = _insert_announcement(db)
+    payload_first = (
+        '{"activities":[{"name":"签到领校服拓印券","action":"使用","category":"free_coupon",'
+        '"end_time":"9月17日07:00","item_name":"校服任选拓印券","confidence":0.9}]}'
+    )
+    service = ActivityService(db)
+    await service.extract_for_announcements(_FakeProvider(payload_first), [announcement_id])
+
+    with db.connect() as conn:
+        first_id = conn.execute("SELECT id FROM activities").fetchone()["id"]
+        first_count = conn.execute("SELECT COUNT(*) FROM activities").fetchone()[0]
+
+    # Same announcement revised: LLM returns a changed deadline this time.
+    payload_second = (
+        '{"activities":[{"name":"签到领校服拓印券","action":"使用","category":"free_coupon",'
+        '"end_time":"9月18日07:00","item_name":"校服任选拓印券","confidence":0.9}]}'
+    )
+    await service.extract_for_announcements(_FakeProvider(payload_second), [announcement_id])
+
+    with db.connect() as conn:
+        row = conn.execute("SELECT id, end_time FROM activities").fetchone()
+    assert first_count == 1
+    assert row["id"] == first_id  # stable id
+    assert row["end_time"] == "2026-09-18T07:00:00+08:00"
+
+
+@pytest.mark.asyncio()
+async def test_reextract_drops_removed_activities(db):
+    announcement_id = _insert_announcement(db)
+    payload_first = (
+        '{"activities":['
+        '{"name":"签到领校服拓印券","action":"使用","category":"free_coupon",'
+        '"end_time":"9月17日07:00","item_name":"校服任选拓印券","confidence":0.9},'
+        '{"name":"纸鸢载愿","action":"参与","category":"game_activity",'
+        '"end_time":"9月20日22:00","confidence":0.9}]}'
+    )
+    service = ActivityService(db)
+    await service.extract_for_announcements(_FakeProvider(payload_first), [announcement_id])
+    with db.connect() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM activities").fetchone()[0] == 2
+
+    # Revision keeps only one of the two activities.
+    payload_second = (
+        '{"activities":[{"name":"签到领校服拓印券","action":"使用","category":"free_coupon",'
+        '"end_time":"9月17日07:00","item_name":"校服任选拓印券","confidence":0.9}]}'
+    )
+    await service.extract_for_announcements(_FakeProvider(payload_second), [announcement_id])
+    with db.connect() as conn:
+        names = [r["name"] for r in conn.execute("SELECT name FROM activities").fetchall()]
+    assert names == ["签到领校服拓印券"]
+
 class _FakeProvider:
     def __init__(self, payload: str):
         self.payload = payload
