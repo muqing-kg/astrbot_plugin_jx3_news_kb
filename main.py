@@ -72,12 +72,10 @@ class JX3NewsKBPlugin(Star):
 
         self.ingest = IngestService(self.db, self.timezone.key)
         self.activity_service = ActivityService(self.db, self.timezone.key)
-        self._embedding_provider = self._resolve_embedding_provider()
-        self._reranker_provider = self._resolve_reranker_provider()
         self.search_service = SearchService(
             self.db,
-            embedding_provider=self._embedding_provider,
-            reranker_provider=self._reranker_provider,
+            embedding_provider=lambda: self.embedding_provider,
+            reranker_provider=lambda: self.reranker_provider,
         )
         self.qa = QAService(
             self.search_service,
@@ -140,39 +138,44 @@ class JX3NewsKBPlugin(Star):
 
     @property
     def embedding_provider(self) -> Any | None:
-        return self._embedding_provider
+        return self._resolve_embedding_provider()
 
     @property
     def reranker_provider(self) -> Any | None:
-        return self._reranker_provider
+        return self._resolve_reranker_provider()
 
     async def probe_providers(self) -> dict[str, Any]:
-        """Probe embedding dimension and reranker availability (cached per load)."""
-        if self._provider_probe is None:
-            self._provider_probe = await self._probe_providers_once()
+        """Probe embedding dimension and reranker availability.
+
+        Providers are initialized after plugins during AstrBot startup, so a
+        failed probe is not cached until the embedding probe succeeds.
+        """
+        if self._provider_probe is not None and self._provider_probe["embedding"]["available"]:
+            return self._provider_probe
+        self._provider_probe = await self._probe_providers_once()
         return self._provider_probe
 
     async def _probe_providers_once(self) -> dict[str, Any]:
         probe: dict[str, Any] = {
             "embedding": {
-                "available": self._embedding_provider is not None,
+                "available": self.embedding_provider is not None,
                 "provider_id": str(self.config.get("embedding_provider_id") or ""),
             },
             "reranker": {
-                "available": self._reranker_provider is not None,
+                "available": self.reranker_provider is not None,
                 "provider_id": str(self.config.get("reranker_provider_id") or ""),
             },
         }
-        if self._embedding_provider is not None:
+        if self.embedding_provider is not None:
             try:
-                vector = await self._embedding_provider.get_embedding("维度探测")
+                vector = await self.embedding_provider.get_embedding("维度探测")
                 probe["embedding"]["dim"] = len(vector)
             except Exception as exc:  # noqa: BLE001 - probe must not crash stats
                 probe["embedding"]["available"] = False
                 probe["embedding"]["error"] = str(exc)[:200]
-        if self._reranker_provider is not None:
+        if self.reranker_provider is not None:
             try:
-                await self._reranker_provider.rerank("能力探测", ["测试", "文档"], top_n=2)
+                await self.reranker_provider.rerank("能力探测", ["测试", "文档"], top_n=2)
                 probe["reranker"]["ok"] = True
             except Exception as exc:  # noqa: BLE001
                 probe["reranker"]["ok"] = False
@@ -229,7 +232,7 @@ class JX3NewsKBPlugin(Star):
 
     async def fetch_and_ingest(self, limit: int | None = None) -> dict[str, Any]:
         return await self.scheduler.fetch_and_ingest(
-            self.client, self._embedding_provider, limit
+            self.client, self.embedding_provider, limit
         )
 
     async def extract_and_schedule(self, announcement_ids: list[int] | None = None) -> int:

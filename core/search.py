@@ -36,10 +36,26 @@ class SearchService:
         vector_top_k: int = 24,
     ) -> None:
         self.db = database
-        self.embedding_provider = embedding_provider
-        self.reranker_provider = reranker_provider
+        self._embedding_provider = embedding_provider
+        self._reranker_provider = reranker_provider
         self.fulltext_top_k = max(1, int(fulltext_top_k))
         self.vector_top_k = max(1, int(vector_top_k))
+
+    @property
+    def embedding_provider(self) -> Any | None:
+        return self._embedding_provider() if callable(self._embedding_provider) else self._embedding_provider
+
+    @embedding_provider.setter
+    def embedding_provider(self, provider: Any | None) -> None:
+        self._embedding_provider = provider
+
+    @property
+    def reranker_provider(self) -> Any | None:
+        return self._reranker_provider() if callable(self._reranker_provider) else self._reranker_provider
+
+    @reranker_provider.setter
+    def reranker_provider(self, provider: Any | None) -> None:
+        self._reranker_provider = provider
 
     async def search(
         self,

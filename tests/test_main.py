@@ -181,6 +181,31 @@ def test_plugin_registers_all_routes(monkeypatch, tmp_path):
     assert "/astrbot_plugin_jx3_news_kb/activities/<activity_id>/delete" in routes
 
 
+def test_providers_resolve_lazily_after_astrbot_startup(monkeypatch, tmp_path):
+    config = {
+        "embedding_provider_id": "emb",
+        "reranker_provider_id": "rerank",
+    }
+    main_module, plugin, context = _make_plugin(
+        monkeypatch, tmp_path, config=config
+    )
+
+    embedding = types.SimpleNamespace(
+        get_embedding=lambda text: [0.1],
+        get_embeddings_batch=lambda texts: [[0.1] for _ in texts],
+    )
+    reranker = types.SimpleNamespace(rerank=lambda *args, **kwargs: [])
+    context.get_provider_by_id = {
+        "emb": embedding,
+        "rerank": reranker,
+    }.get
+
+    assert plugin.embedding_provider is embedding
+    assert plugin.search_service.embedding_provider is embedding
+    assert plugin.reranker_provider is reranker
+    assert plugin.search_service.reranker_provider is reranker
+
+
 def test_message_requires_real_wake(monkeypatch, tmp_path):
     main_module, plugin, _ = _make_plugin(monkeypatch, tmp_path)
     called = []
