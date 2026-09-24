@@ -95,6 +95,7 @@ class JX3NewsKBPlugin(Star):
             base_url=str(self.config.get("api_base_url") or "https://www.jx3api.com"),
             records_path=str(self.config.get("news_records_path") or "/news/records"),
             token=str(self.config.get("api_token") or ""),
+            proxy=str(self.config.get("proxy") or ""),
         )
         self._background_tasks: list[asyncio.Task] = []
         self._provider_probe: dict[str, Any] | None = None

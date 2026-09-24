@@ -16,6 +16,12 @@
     "secret": true,
     "hint": "可选。在 JX3API 申请的访问令牌。"
   },
+  "proxy": {
+    "description": "JX3API 抓取代理",
+    "type": "string",
+    "default": "",
+    "hint": "可选。HTTP/HTTPS 代理地址，例如 http://127.0.0.1:7890。容器内请填容器可访问的地址。留空则直连。"
+  },
 
   "initial_fetch_limit": {
     "description": "首次安装抓取条数",

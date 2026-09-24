@@ -17,11 +17,13 @@ class NewsClient:
         base_url: str = "https://www.jx3api.com",
         records_path: str = "/news/records",
         token: str = "",
+        proxy: str = "",
         timeout: float = 30.0,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.records_path = "/" + records_path.lstrip("/")
         self.token = token
+        self.proxy = str(proxy or "").strip()
         self.timeout = aiohttp.ClientTimeout(total=timeout)
 
     def build_url(self, limit: int) -> str:
@@ -48,7 +50,12 @@ class NewsClient:
             session = aiohttp.ClientSession(timeout=self.timeout)
         assert session is not None
         try:
-            async with session.get(url, headers=headers, params=params) as response:
+            async with session.get(
+                url,
+                headers=headers,
+                params=params,
+                proxy=self.proxy or None,
+            ) as response:
                 if response.status != 200:
                     detail = await response.text()
                     raise JX3APIError(f"HTTP {response.status}：{detail[:200]}")

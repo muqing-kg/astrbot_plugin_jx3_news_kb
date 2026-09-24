@@ -206,6 +206,14 @@ def test_providers_resolve_lazily_after_astrbot_startup(monkeypatch, tmp_path):
     assert plugin.search_service.reranker_provider is reranker
 
 
+def test_news_client_uses_configured_proxy(monkeypatch, tmp_path):
+    config = {"proxy": "http://127.0.0.1:7890"}
+
+    _, plugin, _ = _make_plugin(monkeypatch, tmp_path, config=config)
+
+    assert plugin.client.proxy == "http://127.0.0.1:7890"
+
+
 def test_message_requires_real_wake(monkeypatch, tmp_path):
     main_module, plugin, _ = _make_plugin(monkeypatch, tmp_path)
     called = []

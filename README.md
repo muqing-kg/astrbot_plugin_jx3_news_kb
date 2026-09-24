@@ -53,6 +53,7 @@
 | `api_base_url` | `https://www.jx3api.com` | JX3API 地址 |
 | `news_records_path` | `/news/records` | 公告列表接口路径 |
 | `api_token` | 空 | JX3API Token（可选） |
+| `proxy` | 空 | JX3API 抓取代理，如 `http://127.0.0.1:7890`；容器内需填容器可访问的地址 |
 | `initial_fetch_limit` | 50 | 首次安装抓取条数 |
 | `daily_fetch_limit` | 10 | 每日抓取条数 |
 | `daily_fetch_time` | `00:00` | 每日抓取时间 |
