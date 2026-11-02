@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timedelta
+import re
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -23,11 +23,13 @@ try:
     from .core.qa import QAService
     from .core.search import SearchService
     from .core.scheduler import (
+        DEFAULT_FETCH_INTERVAL_MINUTES,
         ReminderTargets,
         SchedulerService,
         extract_session_id,
         merge_reminder_texts,
     )
+    from .core.text import parse_date, strip_html
     from .web_api.routes import ROUTE_TABLE
 except ImportError:  # imported as a top-level module (tests, direct run)
     from core.activities import ActivityService
@@ -37,11 +39,13 @@ except ImportError:  # imported as a top-level module (tests, direct run)
     from core.qa import QAService
     from core.search import SearchService
     from core.scheduler import (
+        DEFAULT_FETCH_INTERVAL_MINUTES,
         ReminderTargets,
         SchedulerService,
         extract_session_id,
         merge_reminder_texts,
     )
+    from core.text import parse_date, strip_html
     from web_api.routes import ROUTE_TABLE
 
 # Official per-plugin logger: attaches the enricher filter (plugin_tag) and
@@ -58,6 +62,32 @@ def _as_int(config: Any, key: str, default: int) -> int:
         return int(config.get(key, default))
     except (TypeError, ValueError):
         return default
+
+
+def _announcement_key(url: str) -> str:
+    """Identify an announcement by its ``id`` query value, else by full URL."""
+    text = str(url or "").strip()
+    match = re.search(r"[?&]id=(\d+)", text)
+    if match:
+        return match.group(1)
+    return text
+
+
+def _announcement_context(
+    title: Any,
+    announcement_type: Any,
+    url: Any,
+    published_at: Any,
+    content: str,
+) -> dict[str, Any]:
+    """Shape a loaded announcement like a search hit for the QA prompt."""
+    return {
+        "announcement_date": str(published_at or "")[:10],
+        "type": str(announcement_type or "官方公告"),
+        "title": str(title or ""),
+        "url": str(url or ""),
+        "content": content,
+    }
 
 
 class JX3NewsKBPlugin(Star):
@@ -81,6 +111,7 @@ class JX3NewsKBPlugin(Star):
             self.search_service,
             context=context,
             llm_provider_id=str(self.config.get("llm_provider_id") or ""),
+            link_resolver=self.resolve_announcement_link,
         )
         self.scheduler = SchedulerService(
             self.db,
@@ -88,7 +119,7 @@ class JX3NewsKBPlugin(Star):
             self.activity_service,
             timezone_name=self.timezone.key,
             initial_fetch_limit=_as_int(self.config, "initial_fetch_limit", 50),
-            daily_fetch_limit=_as_int(self.config, "daily_fetch_limit", 10),
+            fetch_limit=_as_int(self.config, "fetch_limit", 10),
             catchup_fetch_limit=_as_int(self.config, "catchup_fetch_limit", 50),
         )
         self.client = NewsClient(
@@ -245,6 +276,62 @@ class JX3NewsKBPlugin(Star):
             self.scheduler.create_pending_reminders(targets, announcement_ids)
         return created
 
+    async def resolve_announcement_link(self, url: str) -> dict[str, Any] | None:
+        """Answer material for a pasted announcement link: local row, else JX3API."""
+        target = _announcement_key(url)
+        if not target:
+            return None
+        # LIKE 只做子串粗筛（id=1335902 也会命中 id=13359020），再按键精确比对。
+        with self.db.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT title, type, url, content_text, published_at
+                FROM announcements
+                WHERE url LIKE ?
+                ORDER BY published_at DESC
+                """,
+                (f"%{target}%",),
+            ).fetchall()
+        row = next(
+            (
+                candidate
+                for candidate in rows
+                if _announcement_key(candidate["url"]) == target
+                and str(candidate["content_text"] or "").strip()
+            ),
+            None,
+        )
+        if row is not None:
+            return _announcement_context(
+                row["title"],
+                row["type"],
+                row["url"],
+                row["published_at"],
+                row["content_text"],
+            )
+
+        try:
+            items = await self.client.fetch(min(50, self.scheduler.catchup_fetch_limit))
+        except Exception:  # noqa: BLE001 - upstream may be down; fall back to the index
+            logger.warning("按链接抓取公告失败：%s", url, exc_info=True)
+            return None
+        for item in items:
+            desc = item.get("desc") or {}
+            item_url = str(item.get("url") or desc.get("url") or "").strip()
+            if _announcement_key(item_url) != target:
+                continue
+            content = strip_html(desc.get("content")) or strip_html(desc.get("description"))
+            if not content.strip():
+                return None
+            return _announcement_context(
+                item.get("title") or desc.get("title"),
+                item.get("type"),
+                item_url,
+                parse_date(str(item.get("date") or "")),
+                content,
+            )
+        return None
+
     def reminder_target_count(self) -> int:
         """Whitelist entries usable as reminder destinations (full addresses)."""
         return len(ReminderTargets.from_config(self.config).as_pairs())
@@ -255,7 +342,7 @@ class JX3NewsKBPlugin(Star):
             ReminderTargets.from_config(self.config)
         )
 
-    async def daily_job(self) -> dict[str, Any]:
+    async def fetch_job(self) -> dict[str, Any]:
         result = await self.fetch_and_ingest()
         self.scheduler.prune_logs()
         if result.get("success"):
@@ -316,7 +403,7 @@ class JX3NewsKBPlugin(Star):
         if self._background_tasks:
             return
         self._background_tasks.append(
-            asyncio.create_task(self._daily_loop(), name="jx3-news-daily")
+            asyncio.create_task(self._fetch_loop(), name="jx3-news-fetch")
         )
         self._background_tasks.append(
             asyncio.create_task(self._reminder_loop(), name="jx3-news-reminders")
@@ -328,11 +415,11 @@ class JX3NewsKBPlugin(Star):
             not task.done() for task in self._background_tasks
         )
 
-    async def _daily_loop(self) -> None:
+    async def _fetch_loop(self) -> None:
         # Fresh install: build the initial knowledge base right away.
         try:
             if self.db.count("announcements") == 0:
-                await self._run_daily_job_guarded()
+                await self._run_fetch_job_guarded()
             # Re-create future reminder slots on every start so a mid-cycle
             # update or restart does not miss today's remaining slots.
             if bool(self.config.get("reminder_enabled", True)):
@@ -348,33 +435,22 @@ class JX3NewsKBPlugin(Star):
         except Exception:  # noqa: BLE001 - the loop must survive startup races
             logger.exception("启动时抓取/提醒调度检查失败")
         while True:
-            delay = self._seconds_until(self._daily_fetch_time())
-            logger.debug("next daily fetch in %.0f seconds", delay)
-            await asyncio.sleep(delay)
-            await self._run_daily_job_guarded()
+            interval = self._fetch_interval_seconds()
+            logger.debug("next fetch in %.0f seconds", interval)
+            await asyncio.sleep(interval)
+            await self._run_fetch_job_guarded()
 
-    async def _run_daily_job_guarded(self) -> None:
+    async def _run_fetch_job_guarded(self) -> None:
         try:
-            result = await self.daily_job()
+            result = await self.fetch_job()
             if not result.get("success"):
-                logger.warning("每日抓取失败：%s", result.get("error"))
+                logger.warning("抓取失败：%s", result.get("error"))
         except Exception:  # noqa: BLE001 - the loop must survive failures
-            logger.exception("每日任务异常终止")
+            logger.exception("抓取任务异常终止")
 
-    def _daily_fetch_time(self) -> str:
-        return str(self.config.get("daily_fetch_time") or "00:00")
-
-    def _seconds_until(self, hhmm: str) -> float:
-        try:
-            hour_text, minute_text = hhmm.split(":", 1)
-            hour, minute = int(hour_text), int(minute_text)
-        except (ValueError, AttributeError):
-            hour, minute = 0, 0
-        now = datetime.now(self.timezone)
-        moment = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-        if moment <= now:
-            moment += timedelta(days=1)
-        return max(1.0, (moment - now).total_seconds())
+    def _fetch_interval_seconds(self) -> float:
+        minutes = _as_int(self.config, "fetch_interval_minutes", DEFAULT_FETCH_INTERVAL_MINUTES)
+        return float(max(1, minutes) * 60)
 
     async def _reminder_loop(self) -> None:
         while True:

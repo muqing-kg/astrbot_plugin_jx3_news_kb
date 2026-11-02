@@ -18,8 +18,11 @@ logger = logging.getLogger(__name__)
 # A gap longer than this since the last successful fetch means announcements
 # were missed and a large catch-up fetch is needed.
 CATCHUP_THRESHOLD = timedelta(hours=36)
-# Fetch and reminder logs older than this are pruned by the daily job.
+# Fetch and reminder logs older than this are pruned by the fetch job.
 LOG_RETENTION_DAYS = 7
+# Announcements are polled on this cadence, so a fresh one becomes searchable
+# within minutes instead of waiting for a fixed daily hour.
+DEFAULT_FETCH_INTERVAL_MINUTES = 15
 
 # Activities ending on Monday/Thursday morning die with the weekly maintenance;
 # the last useful reminder is the previous evening.
@@ -161,7 +164,7 @@ class SchedulerService:
         activity_service: ActivityService,
         timezone_name: str = "Asia/Shanghai",
         initial_fetch_limit: int = 50,
-        daily_fetch_limit: int = 10,
+        fetch_limit: int = 10,
         catchup_fetch_limit: int = 50,
     ) -> None:
         self.db = database
@@ -169,7 +172,7 @@ class SchedulerService:
         self.activities = activity_service
         self.timezone = ZoneInfo(timezone_name)
         self.initial_fetch_limit = max(1, int(initial_fetch_limit))
-        self.daily_fetch_limit = max(1, int(daily_fetch_limit))
+        self.fetch_limit = max(1, int(fetch_limit))
         self.catchup_fetch_limit = max(1, int(catchup_fetch_limit))
 
     def now(self) -> datetime:
@@ -196,7 +199,7 @@ class SchedulerService:
             finished = finished.astimezone(self.timezone)
         if self.now() - finished > CATCHUP_THRESHOLD:
             return self.catchup_fetch_limit
-        return self.daily_fetch_limit
+        return self.fetch_limit
 
     async def fetch_and_ingest(
         self,
@@ -530,14 +533,28 @@ class SchedulerService:
             )
             return int(cursor.rowcount)
 
-    def next_run_at(self, daily_fetch_time: str) -> str:
-        """Next daily fetch wall-clock time, for status display."""
-        hour, minute = self._parse_send_time(daily_fetch_time)
-        now = self.now()
-        moment = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-        if moment <= now:
-            moment += timedelta(days=1)
-        return moment.isoformat(timespec="seconds")
+    def next_run_at(self, interval_minutes: int) -> str:
+        """Next poll wall-clock time, for status display."""
+        try:
+            minutes = max(1, int(interval_minutes))
+        except (TypeError, ValueError):
+            minutes = DEFAULT_FETCH_INTERVAL_MINUTES
+        with self.db.connect() as conn:
+            row = conn.execute("SELECT MAX(started_at) FROM fetch_logs").fetchone()
+        last = row[0] if row else None
+        moment: datetime | None = None
+        if last:
+            try:
+                moment = datetime.fromisoformat(str(last))
+            except ValueError:
+                moment = None
+        if moment is None:
+            return self.now().isoformat(timespec="seconds")
+        if moment.tzinfo is None:
+            moment = moment.replace(tzinfo=self.timezone)
+        else:
+            moment = moment.astimezone(self.timezone)
+        return (moment + timedelta(minutes=minutes)).isoformat(timespec="seconds")
 
     def prune_logs(self, retention_days: int = LOG_RETENTION_DAYS) -> dict[str, int]:
         """Drop fetch/reminder logs older than the retention window."""
@@ -557,7 +574,7 @@ class SchedulerService:
             )
         return {"fetch_logs": fetch, "reminder_logs": reminder}
 
-    def status_snapshot(self, daily_fetch_time: str) -> dict[str, Any]:
+    def status_snapshot(self, interval_minutes: int) -> dict[str, Any]:
         with self.db.connect() as conn:
             last = conn.execute(
                 """
@@ -568,13 +585,14 @@ class SchedulerService:
                 """
             ).fetchone()
         return {
-            "next_fetch_at": self.next_run_at(daily_fetch_time),
+            "next_fetch_at": self.next_run_at(interval_minutes),
             "last_fetch": dict(last) if last else None,
         }
 
 
 __all__ = [
     "CATCHUP_THRESHOLD",
+    "DEFAULT_FETCH_INTERVAL_MINUTES",
     "LOG_RETENTION_DAYS",
     "MAINTENANCE_DEADLINE_BEFORE",
     "MAINTENANCE_WEEKDAYS",

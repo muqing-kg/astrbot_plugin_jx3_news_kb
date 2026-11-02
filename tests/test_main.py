@@ -442,6 +442,77 @@ def test_plugin_loads_as_astrbot_package(monkeypatch, tmp_path):
     assert len(context.registered_apis) == 11
 
 
+LINK_URL = "https://jx3.xoyo.com/announce/gg.html?id=1335902"
+
+
+def test_resolve_announcement_link_reads_local_index_first(monkeypatch, tmp_path):
+    main_module, plugin, _ = _make_plugin(monkeypatch, tmp_path)
+    with plugin.db.connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO announcements(
+                source_id, title, type, url, content_text, raw_json,
+                content_hash, published_at, updated_at_source
+            ) VALUES ('1335902', '11月2日例行维护延迟补偿公告', '官方公告', ?,
+                      '11月2日16:00至11月16日7:00领取【解忧】1颗。', '{}', 'h',
+                      '2026-11-02T12:29:00+08:00', '2026-11-02T12:29:00+08:00')
+            """,
+            (LINK_URL,),
+        )
+        conn.execute(
+            """
+            INSERT INTO announcements(
+                source_id, title, type, url, content_text, raw_json,
+                content_hash, published_at, updated_at_source
+            ) VALUES ('13359020', '11月3日外观上新公告', '官方公告',
+                      'https://jx3.xoyo.com/announce/gg.html?id=13359020',
+                      '11月3日外观上新。', '{}', 'h2',
+                      '2026-11-03T10:00:00+08:00', '2026-11-03T10:00:00+08:00')
+            """
+        )
+
+    async def no_request(*args: Any, **kwargs: Any):
+        raise AssertionError("已收录的公告不应再请求接口")
+
+    plugin.client.fetch = no_request
+    item = asyncio.run(plugin.resolve_announcement_link(LINK_URL))
+    assert item["title"] == "11月2日例行维护延迟补偿公告"
+    assert item["announcement_date"] == "2026-11-02"
+    assert "【解忧】" in item["content"]
+
+
+def test_resolve_announcement_link_fetches_missing_record(monkeypatch, tmp_path):
+    main_module, plugin, _ = _make_plugin(monkeypatch, tmp_path, stub_client=True)
+
+    async def fetch(limit: int):
+        return [
+            {
+                "title": "无关公告",
+                "type": "官方公告",
+                "url": "https://jx3.xoyo.com/announce/gg.html?id=1",
+                "date": "2026-11-01",
+                "desc": {"id": "1", "content": "<p>无关正文</p>"},
+            },
+            {
+                "title": "11月2日例行维护延迟补偿公告",
+                "type": "官方公告",
+                "url": LINK_URL,
+                "date": "2026-11-02",
+                "desc": {
+                    "id": "1335902",
+                    "content": "<p>11月2日16:00至11月16日7:00领取【解忧】1颗。</p>",
+                },
+            },
+        ]
+
+    plugin.client.fetch = fetch
+    item = asyncio.run(plugin.resolve_announcement_link(LINK_URL))
+    assert item["title"] == "11月2日例行维护延迟补偿公告"
+    assert item["announcement_date"] == "2026-11-02"
+    assert "<p>" not in item["content"]
+    assert "【解忧】" in item["content"]
+
+
 def _plugin_source_dir():
     from pathlib import Path
 

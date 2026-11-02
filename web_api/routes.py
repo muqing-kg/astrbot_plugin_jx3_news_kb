@@ -8,8 +8,6 @@ Handlers are framework-agnostic async callables taking
 
 from __future__ import annotations
 
-from __future__ import annotations
-
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -82,7 +80,7 @@ async def handle_stats(plugin: Any, query: dict[str, Any], payload: dict[str, An
     )
 
     snapshot = plugin.scheduler.status_snapshot(
-        str(plugin.config.get("daily_fetch_time", "00:00"))
+        plugin.config.get("fetch_interval_minutes")
     )
     probe = await plugin.probe_providers()
     return {

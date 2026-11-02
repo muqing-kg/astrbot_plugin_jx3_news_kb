@@ -6,6 +6,7 @@ from typing import Any
 
 from core.qa import (
     QAService,
+    _NO_FINDING_REPLY,
     _numeric_tokens,
     clean_markdown,
     verify_answer,
@@ -200,3 +201,60 @@ async def test_answer_untouched_when_model_ignores_citations():
     relevant, answer = await service.answer("签到什么时候结束")
     assert relevant is True
     assert answer == "签到第一期在10月12日7:00结束。"
+
+
+LINKED = {
+    "announcement_date": "2026-11-02",
+    "type": "官方公告",
+    "title": "11月2日例行维护延迟补偿公告",
+    "url": "https://jx3.xoyo.com/announce/gg.html?id=1335902",
+    "content": "11月2日16:00至11月16日7:00期间，登录即可领取【解忧】1颗。",
+}
+
+
+class _ExplodingSearch:
+    async def search(self, query: str, **kwargs: Any):
+        raise AssertionError("链接问题不应再查本地索引")
+
+
+def _service_with_link(item: dict[str, Any] | None, answer: str, calls: list[str]):
+    service = QAService(_ExplodingSearch(), context=None)
+    provider = _FakeProvider(answer)
+
+    async def fake_provider(umo: str | None = None):
+        return provider
+
+    async def resolver(url: str):
+        calls.append(url)
+        return item
+
+    service._provider = fake_provider
+    service.link_resolver = resolver
+    return service
+
+
+async def test_answer_uses_pasted_link_instead_of_index():
+    calls: list[str] = []
+    service = _service_with_link(
+        LINKED,
+        "11月2日16:00至11月16日7:00期间可领取【解忧】1颗[1]。",
+        calls,
+    )
+    relevant, answer = await service.answer(
+        "https://jx3.xoyo.com/announce/gg.html?id=1335902 总结一下"
+    )
+    assert relevant is True
+    assert calls == ["https://jx3.xoyo.com/announce/gg.html?id=1335902"]
+    assert "【解忧】" in answer
+    assert "[1]" not in answer
+
+
+async def test_answer_reports_unreadable_link_without_falling_back():
+    calls: list[str] = []
+    service = _service_with_link(None, "不该出现的回答", calls)
+    relevant, answer = await service.answer(
+        "https://jx3.xoyo.com/announce/gg.html?id=1335902 总结一下"
+    )
+    assert relevant is True
+    assert answer != _NO_FINDING_REPLY
+    assert "没能取到这条公告的正文" in answer

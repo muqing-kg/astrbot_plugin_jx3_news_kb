@@ -29,17 +29,17 @@
     "default": 50,
     "hint": "数据库为空时（首次安装）一次性抓取的公告条数，用于建立初始知识库。"
   },
-  "daily_fetch_limit": {
-    "description": "每日抓取条数",
+  "fetch_limit": {
+    "description": "每次抓取条数",
     "type": "int",
     "default": 10,
-    "hint": "每天定时抓取的公告条数。"
+    "hint": "每轮轮询拉的公告条数，同时是停机补抓后的常规上限。"
   },
-  "daily_fetch_time": {
-    "description": "每日抓取时间",
-    "type": "string",
-    "default": "00:00",
-    "hint": "24 小时制 HH:MM 格式，按下方时区计算。"
+  "fetch_interval_minutes": {
+    "description": "抓取间隔（分钟）",
+    "type": "int",
+    "default": 15,
+    "hint": "每隔多少分钟拉取一次最新公告，新公告在下一轮入库。"
   },
   "catchup_fetch_limit": {
     "description": "停机补抓条数",
@@ -51,7 +51,7 @@
     "description": "时区",
     "type": "string",
     "default": "Asia/Shanghai",
-    "hint": "用于计算每日抓取时间和提醒时间。"
+    "hint": "用于计算抓取与提醒时间。"
   },
 
   "whitelist_groups": {

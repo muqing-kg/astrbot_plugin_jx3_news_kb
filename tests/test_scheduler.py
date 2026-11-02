@@ -86,12 +86,12 @@ class _FakeClient:
 
 
 def test_pick_limit_on_empty_database(tmp_path):
-    scheduler = _make_scheduler(tmp_path, initial_fetch_limit=50, daily_fetch_limit=10)
+    scheduler = _make_scheduler(tmp_path, initial_fetch_limit=50, fetch_limit=10)
     assert scheduler.pick_fetch_limit() == 50
 
 
 def test_pick_limit_daily_after_recent_fetch(tmp_path):
-    scheduler = _make_scheduler(tmp_path, initial_fetch_limit=50, daily_fetch_limit=10)
+    scheduler = _make_scheduler(tmp_path, initial_fetch_limit=50, fetch_limit=10)
     _insert_announcement(scheduler.db)
     with scheduler.db.connect() as conn:
         conn.execute(
@@ -106,7 +106,7 @@ def test_pick_limit_daily_after_recent_fetch(tmp_path):
 
 def test_pick_limit_catchup_after_downtime(tmp_path):
     scheduler = _make_scheduler(
-        tmp_path, daily_fetch_limit=10, catchup_fetch_limit=50
+        tmp_path, fetch_limit=10, catchup_fetch_limit=50
     )
     _insert_announcement(scheduler.db)
     with scheduler.db.connect() as conn:
@@ -615,6 +615,15 @@ def test_cancel_reminders_for_announcement(tmp_path):
 
 def test_status_snapshot_next_run(tmp_path):
     scheduler = _make_scheduler(tmp_path)
-    snapshot = scheduler.status_snapshot("00:00")
-    assert snapshot["next_fetch_at"].endswith("00:00:00+08:00")
-    assert snapshot["last_fetch"] is None
+    assert scheduler.status_snapshot(15)["last_fetch"] is None
+    assert scheduler.next_run_at(15).endswith("+08:00")
+
+    with scheduler.db.connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO fetch_logs(
+                started_at, finished_at, success, fetch_limit
+            ) VALUES ('2026-11-02T12:00:00+08:00', '2026-11-02T12:00:05+08:00', 1, 10)
+            """
+        )
+    assert scheduler.status_snapshot(15)["next_fetch_at"] == "2026-11-02T12:15:00+08:00"

@@ -3,11 +3,18 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from datetime import datetime
 from typing import Any
 
 from .search import SearchService
+
+logger = logging.getLogger(__name__)
+
+# Announcement links pasted or quoted by a user are resolved by the injected
+# loader and answered from directly, without going through the index.
+ANNOUNCEMENT_URL_RE = re.compile(r"https?://jx3\.xoyo\.com/[^\s，。；、）)\]】\"'<>]+")
 
 
 ROUTE_SYSTEM_PROMPT = """你负责判断消息是否需要剑网3公告知识库处理。
@@ -69,6 +76,7 @@ _GROUP_HEADING_RE = re.compile(r"^[一二三四五六七八九十]+、")
 _ITEM_INDEX_RE = re.compile(r"^\d+\s*[\.、]\s*")
 _BRACKET_NAME_RE = re.compile(r"【([^【】]{1,24})】")
 _NO_FINDING_REPLY = "现有公告资料中没有找到相关内容。"
+_LINK_NOT_FOUND_REPLY = "没能取到这条公告的正文，可能刚发布或接口暂不可用，稍后再试或直接把公告内容贴过来。"
 
 
 def clean_markdown(text: str) -> str:
@@ -163,12 +171,14 @@ class QAService:
         llm_provider_id: str = "",
         max_context_items: int = 16,
         max_answer_length: int = 1200,
+        link_resolver: Any | None = None,
     ) -> None:
         self.search = search_service
         self.context = context
         self.llm_provider_id = llm_provider_id
         self.max_context_items = max(1, int(max_context_items))
         self.max_answer_length = max(200, int(max_answer_length))
+        self.link_resolver = link_resolver
 
     async def _provider(self, umo: str | None = None) -> Any | None:
         if self.context is None:
@@ -213,6 +223,15 @@ class QAService:
         umo: str | None = None,
     ) -> tuple[bool, str]:
         provider = await self._provider(umo)
+        urls = list(dict.fromkeys(ANNOUNCEMENT_URL_RE.findall(question or "")))[:3]
+        linked = await self._resolve_links(urls)
+        if linked:
+            # The user pointed at a document: answer from it, not from the index.
+            # ponytail: 链接优先且不回落索引，取不到正文就直说；需要回落时再改这里。
+            return await self._compose_answer(question, linked, provider)
+        if urls:
+            return True, _LINK_NOT_FOUND_REPLY
+
         routed = await self.route_query(question, provider, umo)
         if not routed.get("relevant", False):
             return False, ""
@@ -238,6 +257,31 @@ class QAService:
             )
             return True, clean_markdown(str(getattr(response, "completion_text", "") or ""))
 
+        return await self._compose_answer(question, results, provider)
+
+    async def _resolve_links(self, urls: list[str]) -> list[dict[str, Any]]:
+        """Load announcements the user pasted as links, at most three."""
+        if self.link_resolver is None:
+            return []
+        items: list[dict[str, Any]] = []
+        for url in urls:
+            if len(items) >= 3:
+                break
+            try:
+                item = await self.link_resolver(url)
+            except Exception:  # noqa: BLE001 - a bad link must not break answering
+                logger.warning("解析公告链接失败：%s", url, exc_info=True)
+                item = None
+            if item:
+                items.append(item)
+        return items
+
+    async def _compose_answer(
+        self,
+        question: str,
+        results: list[dict[str, Any]],
+        provider: Any | None,
+    ) -> tuple[bool, str]:
         context_parts: list[str] = []
         for index, item in enumerate(results, start=1):
             context_parts.append(
