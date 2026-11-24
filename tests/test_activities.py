@@ -11,23 +11,6 @@ from core.activities import (
     is_reminder_worthy,
     parse_local_datetime,
 )
-from core.qa import clean_markdown
-
-
-def test_clean_markdown_strips_headings_bold_and_code():
-    raw = (
-        "### 一、联动活动\n"
-        "1. **渡厄问心**：参与活动\n"
-        "2. 联动签到`第一期`\n"
-        "**来源：2026-09-10 版本更新公告**"
-    )
-    cleaned = clean_markdown(raw)
-    assert "###" not in cleaned
-    assert "**" not in cleaned
-    assert "`" not in cleaned
-    assert "一、联动活动" in cleaned
-    assert "渡厄问心：参与活动" in cleaned
-    assert "联动签到第一期" in cleaned
 
 
 def test_free_coupon_with_discount_mention_in_evidence_is_kept():
@@ -284,3 +267,250 @@ def test_reminder_message_template(db):
     )
     assert "【签到领校服拓印券 到期提醒】" in item_message
     assert "剩余时间：1 天，该道具将于明天到期" in item_message
+
+
+def _touch_announcement(db, announcement_id: int) -> None:
+    """Mark the row as changed so the next pass re-extracts it."""
+    with db.connect() as conn:
+        conn.execute(
+            "UPDATE announcements SET modified_at = datetime('now', 'localtime', '+1 minute')"
+            " WHERE id = ?",
+            (announcement_id,),
+        )
+
+
+@pytest.mark.asyncio()
+async def test_regex_reread_retires_rows_it_no_longer_finds(db):
+    """A second pattern read replaces the first instead of stacking on it."""
+    announcement_id = _insert_announcement(
+        db, title="中秋活动", content="活动时间：9月20日7:00—9月25日7:00"
+    )
+    service = ActivityService(db)
+    assert await service.extract_for_announcements(None, [announcement_id]) == 1
+
+    with db.connect() as conn:
+        conn.execute(
+            "UPDATE announcements SET content_text = ? WHERE id = ?",
+            (
+                "活动时间：9月20日7:00—9月25日7:00\n"
+                "活动时间：10月1日7:00—10月8日7:00",
+                announcement_id,
+            ),
+        )
+    _touch_announcement(db, announcement_id)
+
+    assert await service.extract_for_announcements(None, [announcement_id]) == 2
+    with db.connect() as conn:
+        rows = conn.execute(
+            "SELECT name, end_time FROM activities WHERE announcement_id = ?"
+            " ORDER BY end_time",
+            (announcement_id,),
+        ).fetchall()
+    # Two windows, no leftover row from the first read.
+    assert [r["end_time"] for r in rows] == [
+        "2026-09-25T07:00:00+08:00",
+        "2026-10-08T07:00:00+08:00",
+    ]
+    assert [r["name"] for r in rows] == ["中秋活动（9月25日）", "中秋活动（10月8日）"]
+
+
+@pytest.mark.asyncio()
+async def test_missing_provider_keeps_existing_activities(db):
+    """No LLM must not delete what a previous run already found."""
+    announcement_id = _insert_announcement(
+        db, content="活动时间：9月20日7:00—9月25日7:00"
+    )
+    payload = (
+        '{"activities":[{"name":"签到领校服拓印券","action":"使用","category":"free_coupon",'
+        '"end_time":"9月17日07:00","item_name":"校服任选拓印券","confidence":0.9}]}'
+    )
+    service = ActivityService(db)
+    await service.extract_for_announcements(_FakeProvider(payload), [announcement_id])
+
+    _touch_announcement(db, announcement_id)
+    created = await service.extract_for_announcements(None, [announcement_id])
+
+    assert created == 0
+    with db.connect() as conn:
+        rows = conn.execute("SELECT name, end_time FROM activities").fetchall()
+        mode = conn.execute(
+            "SELECT activity_extract_mode FROM announcements WHERE id = ?",
+            (announcement_id,),
+        ).fetchone()[0]
+    # The pattern would have found a different window; the model's read stands.
+    assert [(r["name"], r["end_time"]) for r in rows] == [
+        ("签到领校服拓印券", "2026-09-17T07:00:00+08:00")
+    ]
+    assert mode == "llm"
+
+
+@pytest.mark.asyncio()
+async def test_regex_fallback_reads_date_range(db):
+    announcement_id = _insert_announcement(
+        db,
+        title="中秋活动",
+        content="活动时间：9月20日7:00—10月8日维护前\n参与即可获得奖励。",
+        published="2026-09-11T10:00:00+08:00",
+    )
+    service = ActivityService(db)
+    created = await service.extract_for_announcements(None, [announcement_id])
+
+    assert created == 1
+    with db.connect() as conn:
+        row = conn.execute("SELECT * FROM activities").fetchone()
+    # "活动时间：" is a label, not a name: the announcement title is used.
+    assert row["name"] == "中秋活动"
+    assert row["start_time"] == "2026-09-20T07:00:00+08:00"
+    assert row["end_time"] == "2026-10-08T07:00:00+08:00"
+
+
+@pytest.mark.asyncio()
+async def test_regex_keeps_each_window_of_one_announcement(db):
+    announcement_id = _insert_announcement(
+        db,
+        title="双周活动",
+        content=(
+            "活动时间：9月20日7:00—9月27日7:00\n"
+            "活动时间：10月1日7:00—10月8日7:00\n"
+        ),
+        published="2026-09-11T10:00:00+08:00",
+    )
+    service = ActivityService(db)
+    assert await service.extract_for_announcements(None, [announcement_id]) == 2
+    with db.connect() as conn:
+        rows = conn.execute(
+            "SELECT name, end_time FROM activities ORDER BY end_time"
+        ).fetchall()
+    assert [r["end_time"] for r in rows] == [
+        "2026-09-27T07:00:00+08:00",
+        "2026-10-08T07:00:00+08:00",
+    ]
+    # Same fallback title twice: the reminder titles must stay tellable apart.
+    assert [r["name"] for r in rows] == ["双周活动（9月27日）", "双周活动（10月8日）"]
+
+
+@pytest.mark.asyncio()
+async def test_regex_reads_window_without_times(db):
+    """Announcements often write "9月20日—9月25日" with no clock time."""
+    announcement_id = _insert_announcement(
+        db,
+        title="无时刻活动",
+        content="活动时间：9月20日—9月25日，期间每日可领取。",
+        published="2026-09-11T10:00:00+08:00",
+    )
+    service = ActivityService(db)
+    assert await service.extract_for_announcements(None, [announcement_id]) == 1
+    with db.connect() as conn:
+        row = conn.execute("SELECT start_time, end_time FROM activities").fetchone()
+    assert row["start_time"] == "2026-09-20T00:00:00+08:00"
+    assert row["end_time"] == "2026-09-25T23:59:00+08:00"
+
+
+@pytest.mark.asyncio()
+async def test_regex_miss_leaves_announcement_for_retry(db):
+    """A pattern miss must not clear activities nor stamp the row as read."""
+    announcement_id = _insert_announcement(db, content="本公告没有任何日期区间。")
+    with db.connect() as conn:
+        conn.execute(
+            "INSERT INTO activities(announcement_id, name, category, end_time)"
+            " VALUES (?, '旧活动', 'game_activity', '2026-09-17T07:00:00+08:00')",
+            (announcement_id,),
+        )
+
+    service = ActivityService(db)
+    assert await service.extract_for_announcements(None, [announcement_id]) == 0
+
+    with db.connect() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM activities").fetchone()[0] == 1
+        stamped = conn.execute(
+            "SELECT activity_extracted_at FROM announcements WHERE id = ?",
+            (announcement_id,),
+        ).fetchone()[0]
+    assert stamped is None
+
+
+def test_regex_treats_maintenance_words_as_seven_am():
+    from core.activities import regex_extract
+
+    acts = regex_extract(
+        "版本更新公告", "活动时间：9月20日维护后—10月8日维护前", "2026-09-18"
+    )
+    assert len(acts) == 1
+    assert acts[0].start_time.startswith("2026-09-20T07:00")
+    assert acts[0].end_time.startswith("2026-10-08T07:00")
+
+
+def test_regex_places_a_december_window_in_the_previous_year():
+    from core.activities import regex_extract
+
+    acts = regex_extract("元旦活动", "活动时间：12月28日—1月6日", "2027-01-03")
+    assert len(acts) == 1
+    assert acts[0].start_time.startswith("2026-12-28")
+    assert acts[0].end_time.startswith("2027-01-06")
+
+
+def test_regex_rolls_a_january_window_into_the_next_year():
+    from core.activities import regex_extract
+
+    acts = regex_extract("元旦活动", "活动时间：1月6日—1月20日", "2026-12-28")
+    assert len(acts) == 1
+    assert acts[0].start_time.startswith("2027-01-06")
+    assert acts[0].end_time.startswith("2027-01-20")
+
+
+def test_confidence_accepts_non_numeric_values():
+    from core.activities import _to_confidence, is_reminder_worthy
+
+    assert _to_confidence(0.9) == 0.9
+    assert _to_confidence("0.7") == 0.7
+    assert _to_confidence("high") == 0.0
+    assert _to_confidence(None) == 0.0
+
+    activity = {
+        "name": "签到活动",
+        "action": "领取",
+        "category": "login_reward",
+        "end_time": "2026-09-17T07:00:00+08:00",
+        "confidence": "high",
+    }
+    # An unreadable confidence filters the item instead of raising.
+    assert is_reminder_worthy(activity) == (False, "low_confidence")
+
+
+async def test_same_name_in_one_batch_updates_instead_of_twinning(db):
+    payload = (
+        '{"activities":['
+        '{"name":"签到活动","action":"领取","category":"login_reward",'
+        '"start_time":"2026-09-13T00:00","end_time":"2026-09-17T07:00","confidence":0.9},'
+        '{"name":"签到活动","action":"领取","category":"login_reward",'
+        '"start_time":"2026-09-18T00:00","end_time":"2026-09-25T07:00","confidence":0.9}]}'
+    )
+    announcement_id = _insert_announcement(db)
+    service = ActivityService(db)
+    await service.extract_for_announcements(_FakeProvider(payload), [announcement_id])
+
+    with db.connect() as conn:
+        rows = conn.execute("SELECT name, end_time FROM activities").fetchall()
+    assert len(rows) == 1
+    assert rows[0]["end_time"].startswith("2026-09-25")
+
+
+def test_regex_ignores_a_placeholder_publication_year():
+    from datetime import datetime
+
+    from core.activities import regex_extract
+    from zoneinfo import ZoneInfo
+
+    acts = regex_extract("活动", "活动时间：9月20日—9月25日", "1970-01-01")
+    year = datetime.now(ZoneInfo("Asia/Shanghai")).year
+    assert len(acts) == 1
+    assert acts[0].start_time.startswith(f"{year}-09-20")
+
+
+def test_pending_rows_skip_announcements_without_a_body(db):
+    body_less = _insert_announcement(db, title="待补正文公告", content="")
+    _insert_announcement(db, content="活动时间：9月20日—9月25日")
+
+    rows = ActivityService(db)._pending_rows(None, False)
+
+    assert body_less not in [row["id"] for row in rows]

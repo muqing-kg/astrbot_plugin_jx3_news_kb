@@ -24,23 +24,30 @@ class FakePlugin:
         self.db.initialize()
         self.ingest = IngestService(self.db)
         self.scheduler = SchedulerService(self.db, self.ingest, ActivityService(self.db))
-        self.config = {"fetch_interval_minutes": 15}
-        self.embedding_provider = None
-        self.fetch_calls: list[int] = []
+        self.config = {
+            "sync_interval_minutes": 60,
+            "socket_enabled": True,
+            "daily_full_pull_time": "03:00",
+        }
+        self.fetch_calls: list[int | None] = []
 
-    async def fetch_and_ingest(self, limit: int) -> dict[str, Any]:
+    async def fetch_and_ingest(self, limit: int | None = None) -> dict[str, Any]:
         self.fetch_calls.append(limit)
         return {"success": True, "limit": limit, "returned": 0, "inserted": 0,
                 "revised": 0, "skipped": 0, "error": "", "finished_at": ""}
 
+    async def run_sync(self, limit: int | None = None) -> dict[str, Any]:
+        """The guarded round the web API shares with the background loops."""
+        result = await self.fetch_and_ingest(limit)
+        self.scheduler.prune_logs()
+        await self.extract_and_schedule()
+        return result
+
+    def next_sync_at(self) -> str:
+        return "2026-11-02T12:15:00+08:00"
+
     async def extract_and_schedule(self) -> int:
         return 0
-
-    async def probe_providers(self) -> dict[str, Any]:
-        return {
-            "embedding": {"available": False, "provider_id": ""},
-            "reranker": {"available": False, "provider_id": ""},
-        }
 
     def reminder_target_count(self) -> int:
         return 0
@@ -57,7 +64,7 @@ class FakePlugin:
 def _insert_announcement(
     plugin: FakePlugin, title="版本更新公告", url="https://example.com/a"
 ) -> int:
-    """Create one announcement through the real ingest path (chunks + FTS)."""
+    """Create one announcement through the real ingest path."""
     item = {
         "catid": "24581",
         "date": "2026/08/13",
@@ -92,7 +99,9 @@ def test_stats_counts_and_next_fetch(plugin):
     data = asyncio.run(routes.handle_stats(plugin, {}, {}))
     assert data["counts"]["announcements"] == 1
     assert data["next_fetch_at"].endswith("+08:00")
-    assert data["embedding_available"] is False
+    assert data["socket_enabled"] is True
+    assert data["sync_interval_minutes"] == 60
+    assert data["daily_full_pull_time"] == "03:00"
     assert data["reminder_enabled"] is True
     assert data["reminder_targets"] == 0  # FakePlugin whitelist is empty
     assert data["upcoming_reminders"] == []
@@ -143,9 +152,8 @@ def test_detail_includes_revisions_activities_reminders(plugin):
     ))
     assert data["announcement"]["title"] == "版本更新公告"
     assert data["announcement"]["raw_json"]["desc"]["id"] == "1"
-    assert data["chunk_count"] == 1
-    assert data["chunks"][0]["chunk_index"] == 0
-    assert "正文内容" in data["chunks"][0]["content"]
+    assert "正文内容" in data["announcement"]["content_text"]
+    assert "chunks" not in data
     assert "activities" not in data
     assert "reminders" not in data
 
@@ -185,10 +193,9 @@ def test_delete_removes_everything_and_tombstones(plugin):
     data = asyncio.run(routes.handle_announcement_delete(
         plugin, {}, {"confirm": True}, str(announcement_id)
     ))
-    assert data == {"deleted": True, "id": announcement_id, "cancelled_reminders": 4}
+    assert data == {"deleted": True, "id": announcement_id}
 
     assert plugin.db.count("announcements") == 0
-    assert plugin.db.count("chunks") == 0
     assert plugin.db.count("activities") == 0
     assert plugin.db.count("reminders") == 0
     with plugin.db.connect() as conn:
@@ -241,6 +248,13 @@ def test_activity_delete_removes_reminders_without_confirmation(plugin):
     assert data == {"deleted": True, "id": activity_id}
     assert plugin.db.count("activities") == 0
     assert plugin.db.count("reminders") == 0
+    # The announcement counts as read, so the next extraction will not
+    # resurrect the row the user just removed.
+    with plugin.db.connect() as conn:
+        marked = conn.execute(
+            "SELECT activity_extracted_at FROM announcements"
+        ).fetchone()[0]
+    assert marked
 
     again = asyncio.run(routes.handle_activity_delete(
         plugin, {}, {}, str(activity_id)
@@ -305,13 +319,12 @@ def test_stats_upcoming_shows_only_next_48h(plugin):
     assert data["pending_reminders"] == 4
 
 
-def test_rebuild_routes(plugin):
-    _insert_announcement(plugin)
-    fts = asyncio.run(routes.handle_rebuild_fts(plugin, {}, {}))
-    assert fts == {"rebuilt": True, "chunks": 1}
-
-    embedding = asyncio.run(routes.handle_rebuild_embeddings(plugin, {}, {}))
-    assert embedding[1] == 400
+def test_route_table_matches_handlers(plugin):
+    paths = [path for path, _, _ in routes.ROUTE_TABLE]
+    assert len(paths) == 9
+    assert not [path for path in paths if "rebuild" in path]
+    for _, _, handler in routes.ROUTE_TABLE:
+        assert callable(handler)
 
 
 def test_logs_route(plugin):

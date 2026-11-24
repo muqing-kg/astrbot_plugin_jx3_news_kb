@@ -1,4 +1,4 @@
-/* JX3 news knowledge base Plugin Page styles. */
+/* JX3 activity reminder Plugin Page styles. */
 :root {
   --bg: #f5f6f8;
   --card-bg: #ffffff;
@@ -173,7 +173,6 @@ input[type="search"], input[type="text"], select {
 }
 .item-head button { margin-left: auto; }
 .hl { color: var(--highlight); font-weight: 600; }
-.chunk-item { margin-bottom: 10px; }
 .activity-item .name { font-weight: 600; }
 .tag {
   display: inline-block;

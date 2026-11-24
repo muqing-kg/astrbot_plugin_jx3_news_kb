@@ -1,4 +1,4 @@
-"""Ingestion, revision history, chunking and hard deletion."""
+"""Ingestion, revision history and hard deletion."""
 
 from __future__ import annotations
 
@@ -7,7 +7,13 @@ import sqlite3
 from typing import Any
 
 from .database import Database
-from .text import chunk_text, content_fingerprint, parse_date, strip_html, unix_to_iso
+from .text import (
+    content_fingerprint,
+    parse_date,
+    parse_push_date,
+    strip_html,
+    unix_to_iso,
+)
 
 
 class IngestService:
@@ -15,20 +21,30 @@ class IngestService:
         self.db = database
         self.timezone_name = timezone_name
 
-    async def ingest_items(
-        self,
-        items: list[dict[str, Any]],
-        embedding_provider: Any | None = None,
-    ) -> dict[str, int]:
-        """Ingest raw JX3API records. Embedding indexing remains best effort."""
+    async def ingest_items(self, items: list[dict[str, Any]]) -> dict[str, int]:
+        """Ingest raw JX3API records."""
         result = {"returned": len(items), "inserted": 0, "revised": 0, "skipped": 0}
         with self.db.connect() as conn:
             for item in items:
                 outcome = self._ingest_item(conn, item)
                 result[outcome] += 1
-        if embedding_provider is not None:
-            await self.index_missing_embeddings(embedding_provider)
         return result
+
+    def ingest_push(self, detail: dict[str, Any]) -> str:
+        """Write one push payload (title/type/url/date, no body) immediately.
+
+        The body arrives later through the regular records fetch, which fills
+        the empty row in place instead of adding a revision.
+        """
+        item = {
+            "title": str(detail.get("title") or "").strip(),
+            "type": str(detail.get("type") or "").strip(),
+            "url": str(detail.get("url") or "").strip(),
+            "date": parse_push_date(str(detail.get("date") or ""), self.timezone_name),
+            "desc": {},
+        }
+        with self.db.connect() as conn:
+            return self._ingest_item(conn, item)
 
     def _ingest_item(self, conn: sqlite3.Connection, item: dict[str, Any]) -> str:
         desc = item.get("desc") or {}
@@ -48,9 +64,13 @@ class IngestService:
             return "skipped"
 
         announcement_date = parse_date(str(item.get("date") or ""))
-        published_at = unix_to_iso(
-            desc.get("inputtime"), self.timezone_name
-        ) or f"{announcement_date or '1970-01-01'}T00:00:00+08:00"
+        # Source timestamps win; the date-only fallback exists for rows whose
+        # record carries no unix time at all. An unreadable date stays empty
+        # rather than becoming a 1970 placeholder that later reads as real.
+        published_source = unix_to_iso(desc.get("inputtime"), self.timezone_name)
+        published_at = published_source or (
+            f"{announcement_date}T00:00:00+08:00" if announcement_date else ""
+        )
         updated_at_source = unix_to_iso(
             desc.get("updatetime"), self.timezone_name
         ) or published_at
@@ -60,7 +80,7 @@ class IngestService:
         raw_json = json.dumps(item, ensure_ascii=False, separators=(",", ":"))
 
         existing = conn.execute(
-            "SELECT id, content_hash FROM announcements WHERE url = ?",
+            "SELECT id, content_hash, content_text FROM announcements WHERE url = ?",
             (url,),
         ).fetchone()
 
@@ -78,14 +98,9 @@ class IngestService:
                     updated_at_source,
                 ),
             )
-            announcement_id = int(cursor.lastrowid)
-            revision_id = self._insert_revision(
-                conn, announcement_id, 1, title, content_text, raw_json,
+            self._insert_revision(
+                conn, int(cursor.lastrowid), 1, title, content_text, raw_json,
                 fingerprint, updated_at_source,
-            )
-            self._insert_chunks(
-                conn, announcement_id, revision_id, title, announcement_date,
-                announcement_type, url, content_text,
             )
             return "inserted"
 
@@ -93,47 +108,54 @@ class IngestService:
         if existing["content_hash"] == fingerprint:
             return "skipped"
 
-        old_revision = conn.execute(
-            """
-            SELECT id, revision_no FROM announcement_revisions
-            WHERE announcement_id = ? AND content_hash = ?
-            """,
-            (announcement_id, fingerprint),
-        ).fetchone()
-        if old_revision:
-            revision_id = int(old_revision["id"])
-        else:
-            next_no = int(
-                conn.execute(
-                    """
-                    SELECT COALESCE(MAX(revision_no), 0) + 1
-                    FROM announcement_revisions WHERE announcement_id = ?
-                    """,
-                    (announcement_id,),
-                ).fetchone()[0]
-            )
-            revision_id = self._insert_revision(
-                conn, announcement_id, next_no, title, content_text, raw_json,
-                fingerprint, updated_at_source,
-            )
+        # A later fetch that comes back without a body is a failed read, not a
+        # content change: writing it would blank text that is already stored.
+        if str(existing["content_text"] or "").strip() and not content_text.strip():
+            return "skipped"
+
+        # A row written from a push carries no body yet: fill it in place so
+        # the revision history stays one entry per real content change.
+        backfill = not str(existing["content_text"] or "").strip() and bool(
+            content_text.strip()
+        )
+        if not backfill:
+            old_revision = conn.execute(
+                """
+                SELECT id FROM announcement_revisions
+                WHERE announcement_id = ? AND content_hash = ?
+                """,
+                (announcement_id, fingerprint),
+            ).fetchone()
+            if old_revision is None:
+                next_no = int(
+                    conn.execute(
+                        """
+                        SELECT COALESCE(MAX(revision_no), 0) + 1
+                        FROM announcement_revisions WHERE announcement_id = ?
+                        """,
+                        (announcement_id,),
+                    ).fetchone()[0]
+                )
+                self._insert_revision(
+                    conn, announcement_id, next_no, title, content_text, raw_json,
+                    fingerprint, updated_at_source,
+                )
 
         conn.execute(
             """
             UPDATE announcements
             SET source_id = ?, catid = ?, title = ?, type = ?, description = ?,
                 content_text = ?, raw_json = ?, content_hash = ?,
-                updated_at_source = ?, modified_at = datetime('now', 'localtime')
+                published_at = COALESCE(NULLIF(?, ''), published_at),
+                updated_at_source = ?,
+                modified_at = datetime('now', 'localtime')
             WHERE id = ?
             """,
             (
                 source_id, catid, title, announcement_type, description,
-                content_text, raw_json, fingerprint, updated_at_source,
-                announcement_id,
+                content_text, raw_json, fingerprint, published_source,
+                updated_at_source, announcement_id,
             ),
-        )
-        self._insert_chunks(
-            conn, announcement_id, revision_id, title, announcement_date,
-            announcement_type, url, content_text,
         )
         return "revised"
 
@@ -161,69 +183,6 @@ class IngestService:
             ),
         )
         return int(cursor.lastrowid)
-
-    def _insert_chunks(
-        self,
-        conn: sqlite3.Connection,
-        announcement_id: int,
-        revision_id: int,
-        title: str,
-        announcement_date: str,
-        announcement_type: str,
-        url: str,
-        content_text: str,
-    ) -> None:
-        chunks = chunk_text(content_text)
-        for index, content in enumerate(chunks):
-            cursor = conn.execute(
-                """
-                INSERT INTO chunks(
-                    announcement_id, revision_id, chunk_index, title,
-                    announcement_date, announcement_type, url, content
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    announcement_id, revision_id, index, title, announcement_date,
-                    announcement_type, url, content,
-                ),
-            )
-            chunk_id = int(cursor.lastrowid)
-            conn.execute(
-                """
-                INSERT INTO chunks_fts(rowid, title, content, announcement_id, chunk_id)
-                VALUES (?, ?, ?, ?, ?)
-                """,
-                (chunk_id, title, content, announcement_id, chunk_id),
-            )
-
-    async def index_missing_embeddings(self, embedding_provider: Any) -> int:
-        """Index chunks missing vectors; failures never affect database ingestion."""
-        with self.db.connect() as conn:
-            rows = conn.execute(
-                "SELECT id, content FROM chunks WHERE embedding IS NULL ORDER BY id"
-            ).fetchall()
-        if not rows:
-            return 0
-        vectors = await embedding_provider.get_embeddings_batch(
-            [row["content"] for row in rows]
-        )
-        if len(vectors) != len(rows):
-            raise RuntimeError("向量接口返回的向量数量与预期不符")
-        dim = len(vectors[0])
-        with self.db.connect() as conn:
-            for row, vector in zip(rows, vectors, strict=True):
-                if len(vector) != dim:
-                    raise RuntimeError("向量接口返回的向量维度不一致")
-                conn.execute(
-                    """
-                    UPDATE chunks
-                    SET embedding = ?, embedding_dim = ?,
-                        embedding_updated_at = datetime('now', 'localtime')
-                    WHERE id = ?
-                    """,
-                    (json.dumps(vector).encode("utf-8"), dim, row["id"]),
-                )
-        return len(rows)
 
     def hard_delete_announcement(self, announcement_id: int) -> bool:
         """Delete one announcement and all related records, leaving a tombstone."""

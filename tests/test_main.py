@@ -7,8 +7,12 @@ import importlib
 import shutil
 import sys
 import types
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any
+
+import pytest
+
+ROUTE_COUNT = 9
 
 
 def _install_fake_astrbot(monkeypatch, data_path) -> None:
@@ -124,37 +128,14 @@ class FakeContext:
     platform_manager = _Platforms()
 
 
-class FakeEvent:
-    def __init__(
-        self,
-        is_at_or_wake_command=True,
-        group_id="",
-        sender_id="10086",
-        message_str="新活动",
-    ):
-        self.is_wake = True  # AstrBot forces this True for plugin listeners
-        self.is_at_or_wake_command = is_at_or_wake_command
-        self.message_str = message_str
-        self.unified_msg_origin = "fake:GroupMessage:10001"
-        self._group_id = group_id
-        self._sender_id = sender_id
-        self.sent_results: list[Any] = []
-        self.stopped = False
+class _StubClient:
+    def __init__(self, items: list[dict[str, Any]] | None = None) -> None:
+        self.items = items or []
+        self.calls: list[int | None] = []
 
-    def get_group_id(self):
-        return self._group_id
-
-    def get_sender_id(self):
-        return self._sender_id
-
-    def plain_result(self, text):
-        return f"plain:{text}"
-
-    async def send(self, result):
-        self.sent_results.append(result)
-
-    def stop_event(self):
-        self.stopped = True
+    async def fetch(self, limit: int | None = None):
+        self.calls.append(limit)
+        return self.items
 
 
 def _make_plugin(monkeypatch, tmp_path, config=None, stub_client=False):
@@ -175,35 +156,11 @@ def _make_plugin(monkeypatch, tmp_path, config=None, stub_client=False):
 def test_plugin_registers_all_routes(monkeypatch, tmp_path):
     main_module, plugin, context = _make_plugin(monkeypatch, tmp_path)
     routes = [route for route, _, _ in context.registered_apis]
-    assert len(routes) == 11
+    assert len(routes) == ROUTE_COUNT
     assert all(route.startswith("/astrbot_plugin_jx3_news_kb") for route in routes)
     assert "/astrbot_plugin_jx3_news_kb/announcements/<announcement_id>/delete" in routes
     assert "/astrbot_plugin_jx3_news_kb/activities/<activity_id>/delete" in routes
-
-
-def test_providers_resolve_lazily_after_astrbot_startup(monkeypatch, tmp_path):
-    config = {
-        "embedding_provider_id": "emb",
-        "reranker_provider_id": "rerank",
-    }
-    main_module, plugin, context = _make_plugin(
-        monkeypatch, tmp_path, config=config
-    )
-
-    embedding = types.SimpleNamespace(
-        get_embedding=lambda text: [0.1],
-        get_embeddings_batch=lambda texts: [[0.1] for _ in texts],
-    )
-    reranker = types.SimpleNamespace(rerank=lambda *args, **kwargs: [])
-    context.get_provider_by_id = {
-        "emb": embedding,
-        "rerank": reranker,
-    }.get
-
-    assert plugin.embedding_provider is embedding
-    assert plugin.search_service.embedding_provider is embedding
-    assert plugin.reranker_provider is reranker
-    assert plugin.search_service.reranker_provider is reranker
+    assert not [route for route in routes if "rebuild" in route]
 
 
 def test_news_client_uses_configured_proxy(monkeypatch, tmp_path):
@@ -214,66 +171,119 @@ def test_news_client_uses_configured_proxy(monkeypatch, tmp_path):
     assert plugin.client.proxy == "http://127.0.0.1:7890"
 
 
-def test_message_requires_real_wake(monkeypatch, tmp_path):
-    main_module, plugin, _ = _make_plugin(monkeypatch, tmp_path)
-    called = []
+def test_out_of_range_fetch_limits_are_clamped(monkeypatch, tmp_path):
+    """A typo like 100 or 0 would make NewsClient reject every sync."""
+    config = {
+        "initial_fetch_limit": 500,
+        "fetch_limit": 0,
+        "catchup_fetch_limit": "abc",
+    }
 
-    async def fake_answer(question, umo):
-        called.append(question)
-        return True, "answer"
+    _, plugin, _ = _make_plugin(monkeypatch, tmp_path, config=config)
 
-    plugin.qa.answer = fake_answer
-
-    # AstrBot forces is_wake=True for plugin listeners, but plain group chat
-    # that never woke the bot must stay silent.
-    unwoke = FakeEvent(is_at_or_wake_command=False, group_id="10001")
-    asyncio.run(plugin.on_message(unwoke))
-    assert unwoke.sent_results == [] and unwoke.stopped is False
-    assert called == []
-
-    woke = FakeEvent(is_at_or_wake_command=True, group_id="10001")
-    asyncio.run(plugin.on_message(woke))
-    assert woke.sent_results == ["plain:answer"]
-    assert woke.stopped is True
-    assert called == ["新活动"]
+    assert plugin.scheduler.initial_fetch_limit == 50
+    assert plugin.scheduler.fetch_limit == 1
+    assert plugin.scheduler.catchup_fetch_limit == 50
 
 
-def test_message_group_whitelist(monkeypatch, tmp_path):
-    main_module, plugin, _ = _make_plugin(
-        monkeypatch, tmp_path, config={"whitelist_groups": ["10001"]}
+def test_push_writes_row_then_fills_body(monkeypatch, tmp_path):
+    main_module, plugin, _ = _make_plugin(monkeypatch, tmp_path, stub_client=True)
+    plugin.client = _StubClient(
+        [
+            {
+                "catid": "24581",
+                "date": "2026/09/11",
+                "title": "中秋活动公告",
+                "type": "官方公告",
+                "url": "https://example.com/push",
+                "desc": {
+                    "id": "9",
+                    "inputtime": "1789012800",
+                    "content": "<p>活动到 9 月 20 日 7:00 结束。</p>",
+                },
+            }
+        ]
     )
-    called = []
 
-    async def fake_answer(question, umo):
-        called.append(question)
-        return True, "answer"
+    async def scenario() -> None:
+        await plugin._on_push(
+            {
+                "title": "中秋活动公告",
+                "type": "官方公告",
+                "url": "https://example.com/push",
+                "date": "09/11",
+            }
+        )
+        # The push returns before the body fetch; it runs as a background task.
+        assert plugin._backfill_task is not None
+        await plugin._backfill_task
 
-    plugin.qa.answer = fake_answer
+    asyncio.run(scenario())
 
-    outside = FakeEvent(group_id="99999")
-    asyncio.run(plugin.on_message(outside))
-    assert outside.sent_results == [] and called == []
+    assert len(plugin.client.calls) == 1
+    with plugin.db.connect() as conn:
+        row = conn.execute(
+            "SELECT title, content_text FROM announcements WHERE url = ?",
+            ("https://example.com/push",),
+        ).fetchone()
+    assert row["title"] == "中秋活动公告"
+    assert "9 月 20 日" in row["content_text"]
 
-    inside = FakeEvent(group_id="10001")
-    asyncio.run(plugin.on_message(inside))
-    assert inside.sent_results == ["plain:answer"]
 
-
-def test_private_allow_switch(monkeypatch, tmp_path):
-    main_module, plugin, _ = _make_plugin(
-        monkeypatch, tmp_path, config={"allow_private": False}
+def test_next_sync_uses_configured_interval(monkeypatch, tmp_path):
+    _, plugin, _ = _make_plugin(
+        monkeypatch,
+        tmp_path,
+        config={"sync_interval_minutes": 60, "daily_full_pull_time": "03:00"},
     )
-    called = []
+    now = datetime.now(plugin.timezone)
+    plugin.config["daily_full_pull_time"] = (now + timedelta(hours=10)).strftime("%H:%M")
 
-    async def fake_answer(question, umo):
-        called.append(question)
-        return True, "answer"
+    wait, daily = plugin.next_sync()
+    if daily:  # 十小时后跨过午夜时，日更会比常规间隔更早
+        assert wait <= 60 * 60
+    else:
+        assert wait == pytest.approx(3600)
 
-    plugin.qa.answer = fake_answer
 
-    event = FakeEvent(group_id="")
-    asyncio.run(plugin.on_message(event))
-    assert event.sent_results == [] and called == []
+def test_next_sync_switches_to_daily_full_pull(monkeypatch, tmp_path):
+    _, plugin, _ = _make_plugin(
+        monkeypatch,
+        tmp_path,
+        config={"sync_interval_minutes": 60, "daily_full_pull_time": "03:00"},
+    )
+    now = datetime.now(plugin.timezone)
+    if now.hour >= 23:
+        pytest.skip("临近午夜，日更与常规间隔会重叠")
+    plugin.config["daily_full_pull_time"] = (now + timedelta(minutes=30)).strftime(
+        "%H:%M"
+    )
+
+    wait, daily = plugin.next_sync()
+    assert daily is True
+    assert 0 < wait <= 30 * 60
+
+
+def test_next_sync_catches_up_a_missed_daily_pull(monkeypatch, tmp_path):
+    """A sync that straddles 03:00 must not silently skip the day's full pull."""
+    _, plugin, _ = _make_plugin(
+        monkeypatch,
+        tmp_path,
+        config={"sync_interval_minutes": 60, "daily_full_pull_time": "03:00"},
+    )
+    now = datetime.now(plugin.timezone)
+    missed = now - timedelta(minutes=5)
+    if missed.date() != now.date():
+        pytest.skip("刚过午夜，日更时刻落在昨天")
+    plugin.config["daily_full_pull_time"] = missed.strftime("%H:%M")
+
+    wait, daily = plugin.next_sync()
+    assert daily is True
+    assert wait == 0.0
+
+    plugin._daily_done = now.date()
+    _, daily = plugin.next_sync()
+    assert daily is False
 
 
 def test_send_due_reminders_marks_sent(monkeypatch, tmp_path):
@@ -363,7 +373,7 @@ def test_send_due_reminders_merges_same_target(monkeypatch, tmp_path):
     # One combined message per target instead of one message per reminder.
     assert len(context.sent) == 1
     _, chain = context.sent[0]
-    assert "今日到期提醒 · 共 2 项" in chain.parts[0]
+    assert "到期提醒 · 共 2 项" in chain.parts[0]
     assert "【活动A 到期提醒】" in chain.parts[0]
     assert "【活动B 到期提醒】" in chain.parts[0]
 
@@ -374,19 +384,14 @@ def test_send_due_reminders_merges_same_target(monkeypatch, tmp_path):
     assert statuses == ["sent", "sent"]
 
 
-class _StubClient:
-    async def fetch(self, limit: int):
-        return []
-
-
 def test_background_tasks_start_and_terminate(monkeypatch, tmp_path):
     main_module, plugin, _ = _make_plugin(monkeypatch, tmp_path)
     plugin.client = _StubClient()
 
     async def scenario():
-        await plugin.on_astrbot_loaded()
+        plugin._start_background_tasks()
         tasks = list(plugin._background_tasks)
-        assert len(tasks) == 2
+        assert len(tasks) == 3
         await asyncio.sleep(0.1)
         alive = [not task.done() for task in tasks]
         await plugin.terminate()
@@ -405,7 +410,7 @@ async def test_tasks_start_on_init_inside_running_loop(monkeypatch, tmp_path):
     on_astrbot_loaded on reload; the loops must start from __init__."""
     main_module, plugin, _ = _make_plugin(monkeypatch, tmp_path, stub_client=True)
     # Tasks are created synchronously during construction.
-    assert len(plugin._background_tasks) == 2
+    assert len(plugin._background_tasks) == 3
     assert plugin.background_alive() is True
     await asyncio.sleep(0.1)
     assert plugin.background_alive() is True
@@ -439,81 +444,75 @@ def test_plugin_loads_as_astrbot_package(monkeypatch, tmp_path):
     assert module.__name__ == module_name
     context = FakeContext()
     plugin = module.JX3NewsKBPlugin(context, {})
-    assert len(context.registered_apis) == 11
-
-
-LINK_URL = "https://jx3.xoyo.com/announce/gg.html?id=1335902"
-
-
-def test_resolve_announcement_link_reads_local_index_first(monkeypatch, tmp_path):
-    main_module, plugin, _ = _make_plugin(monkeypatch, tmp_path)
-    with plugin.db.connect() as conn:
-        conn.execute(
-            """
-            INSERT INTO announcements(
-                source_id, title, type, url, content_text, raw_json,
-                content_hash, published_at, updated_at_source
-            ) VALUES ('1335902', '11月2日例行维护延迟补偿公告', '官方公告', ?,
-                      '11月2日16:00至11月16日7:00领取【解忧】1颗。', '{}', 'h',
-                      '2026-11-02T12:29:00+08:00', '2026-11-02T12:29:00+08:00')
-            """,
-            (LINK_URL,),
-        )
-        conn.execute(
-            """
-            INSERT INTO announcements(
-                source_id, title, type, url, content_text, raw_json,
-                content_hash, published_at, updated_at_source
-            ) VALUES ('13359020', '11月3日外观上新公告', '官方公告',
-                      'https://jx3.xoyo.com/announce/gg.html?id=13359020',
-                      '11月3日外观上新。', '{}', 'h2',
-                      '2026-11-03T10:00:00+08:00', '2026-11-03T10:00:00+08:00')
-            """
-        )
-
-    async def no_request(*args: Any, **kwargs: Any):
-        raise AssertionError("已收录的公告不应再请求接口")
-
-    plugin.client.fetch = no_request
-    item = asyncio.run(plugin.resolve_announcement_link(LINK_URL))
-    assert item["title"] == "11月2日例行维护延迟补偿公告"
-    assert item["announcement_date"] == "2026-11-02"
-    assert "【解忧】" in item["content"]
-
-
-def test_resolve_announcement_link_fetches_missing_record(monkeypatch, tmp_path):
-    main_module, plugin, _ = _make_plugin(monkeypatch, tmp_path, stub_client=True)
-
-    async def fetch(limit: int):
-        return [
-            {
-                "title": "无关公告",
-                "type": "官方公告",
-                "url": "https://jx3.xoyo.com/announce/gg.html?id=1",
-                "date": "2026-11-01",
-                "desc": {"id": "1", "content": "<p>无关正文</p>"},
-            },
-            {
-                "title": "11月2日例行维护延迟补偿公告",
-                "type": "官方公告",
-                "url": LINK_URL,
-                "date": "2026-11-02",
-                "desc": {
-                    "id": "1335902",
-                    "content": "<p>11月2日16:00至11月16日7:00领取【解忧】1颗。</p>",
-                },
-            },
-        ]
-
-    plugin.client.fetch = fetch
-    item = asyncio.run(plugin.resolve_announcement_link(LINK_URL))
-    assert item["title"] == "11月2日例行维护延迟补偿公告"
-    assert item["announcement_date"] == "2026-11-02"
-    assert "<p>" not in item["content"]
-    assert "【解忧】" in item["content"]
+    assert len(context.registered_apis) == ROUTE_COUNT
 
 
 def _plugin_source_dir():
     from pathlib import Path
 
     return Path(__file__).resolve().parent.parent
+
+
+def test_send_failure_keeps_reminder_pending(monkeypatch, tmp_path):
+    """A platform error must not burn the reminder: it stays pending."""
+    _, plugin, context = _make_plugin(monkeypatch, tmp_path)
+
+    async def _boom(session, chain):
+        raise RuntimeError("platform offline")
+
+    context.send_message = _boom
+
+    with plugin.db.connect() as conn:
+        cursor = conn.execute(
+            """
+            INSERT INTO announcements(
+                source_id, title, type, url, content_text, raw_json,
+                content_hash, published_at, updated_at_source
+            ) VALUES ('1', 't', 'g', 'u', 'c', '{}', 'h',
+                      '2026-08-13T10:00:00+08:00', '2026-08-13T10:00:00+08:00')
+            """
+        )
+        announcement_id = cursor.lastrowid
+        cursor = conn.execute(
+            """
+            INSERT INTO activities(
+                announcement_id, name, action, category, end_time
+            ) VALUES (?, '活动A', '使用', 'free_coupon',
+                      '2099-09-17T07:00:00+08:00')
+            """,
+            (announcement_id,),
+        )
+        past = (plugin.scheduler.now() - timedelta(minutes=1)).isoformat(
+            timespec="seconds"
+        )
+        conn.execute(
+            """
+            INSERT INTO reminders(
+                activity_id, target_type, target_id, scheduled_at, message_text
+            ) VALUES (?, 'group', 'fake:GroupMessage:10001', ?, ?)
+            """,
+            (cursor.lastrowid, past, "【活动A 到期提醒】\n待办：使用"),
+        )
+
+    assert asyncio.run(plugin.send_due_reminders()) == 0
+
+    with plugin.db.connect() as conn:
+        row = conn.execute("SELECT status, error FROM reminders").fetchone()
+    assert row["status"] == "pending"
+    assert "platform offline" in row["error"]
+
+
+def test_next_sync_waits_out_the_daily_cooldown(monkeypatch, tmp_path):
+    """A failed daily pull backs off instead of retrying in a tight loop."""
+    from datetime import datetime, timedelta
+
+    _, plugin, _ = _make_plugin(monkeypatch, tmp_path)
+    plugin.config["daily_full_pull_time"] = "00:00"
+    plugin._daily_done = None
+    plugin._daily_cooldown_until = datetime.now(plugin.timezone) + timedelta(minutes=5)
+
+    wait, daily = plugin.next_sync()
+
+    assert daily is True
+    assert 0 < wait <= 300
+

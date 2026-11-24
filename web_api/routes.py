@@ -8,6 +8,7 @@ Handlers are framework-agnostic async callables taking
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -27,9 +28,8 @@ async def handle_stats(plugin: Any, query: dict[str, Any], payload: dict[str, An
     db = plugin.db
     counts = {
         table: db.count(table)
-        for table in ("announcements", "chunks", "activities", "reminders")
+        for table in ("announcements", "activities", "reminders")
     }
-    counts["embeddings"] = _count_embeddings(db)
     with db.connect() as conn:
         pending = int(
             conn.execute(
@@ -79,31 +79,20 @@ async def handle_stats(plugin: Any, query: dict[str, Any], payload: dict[str, An
         key=lambda r: r["scheduled_at"],
     )
 
-    snapshot = plugin.scheduler.status_snapshot(
-        plugin.config.get("fetch_interval_minutes")
-    )
-    probe = await plugin.probe_providers()
+    snapshot = plugin.scheduler.status_snapshot(plugin.next_sync_at())
     return {
         "counts": counts,
         "pending_reminders": pending,
         "upcoming_reminders": upcoming_reminders,
         "last_fetch": snapshot["last_fetch"],
         "next_fetch_at": snapshot["next_fetch_at"],
-        "embedding_available": probe["embedding"]["available"],
-        "providers": probe,
         "reminder_enabled": bool(plugin.config.get("reminder_enabled", True)),
         "reminder_targets": int(plugin.reminder_target_count()),
         "scheduler_alive": bool(plugin.background_alive()),
+        "socket_enabled": bool(plugin.config.get("socket_enabled", True)),
+        "sync_interval_minutes": int(plugin.config.get("sync_interval_minutes", 60)),
+        "daily_full_pull_time": str(plugin.config.get("daily_full_pull_time") or "03:00"),
     }
-
-
-def _count_embeddings(db: Any) -> int:
-    with db.connect() as conn:
-        return int(
-            conn.execute(
-                "SELECT COUNT(*) FROM chunks WHERE embedding IS NOT NULL"
-            ).fetchone()[0]
-        )
 
 
 async def handle_announcements(
@@ -187,33 +176,15 @@ async def handle_announcement_detail(
             """,
             (announcement_id_int,),
         ).fetchall()
-        chunk_count = int(
-            conn.execute(
-                "SELECT COUNT(*) FROM chunks WHERE announcement_id = ?",
-                (announcement_id_int,),
-            ).fetchone()[0]
-        )
-        chunks = conn.execute(
-            """
-            SELECT chunk_index, content, embedding_updated_at
-            FROM chunks WHERE announcement_id = ?
-            ORDER BY chunk_index
-            """,
-            (announcement_id_int,),
-        ).fetchall()
     detail = dict(row)
     detail["raw_json"] = _parse_raw_json(detail.get("raw_json"))
     return {
         "announcement": detail,
         "revisions": [dict(item) for item in revisions],
-        "chunks": [dict(item) for item in chunks],
-        "chunk_count": chunk_count,
     }
 
 
 def _parse_raw_json(value: Any) -> Any:
-    import json
-
     try:
         return json.loads(value) if isinstance(value, str) else value
     except json.JSONDecodeError:
@@ -229,11 +200,11 @@ async def handle_announcement_delete(
         return {"error": "无效的 ID"}, 400
     if payload.get("confirm") is not True:
         return {"error": "缺少删除确认标志"}, 400
-    pending = plugin.scheduler.cancel_reminders_for_announcement(announcement_id_int)
+    # Reminders, activities and logs disappear through the foreign keys.
     deleted = plugin.ingest.hard_delete_announcement(announcement_id_int)
     if not deleted:
         return {"error": "未找到该公告"}, 404
-    return {"deleted": True, "id": announcement_id_int, "cancelled_reminders": pending}
+    return {"deleted": True, "id": announcement_id_int}
 
 
 async def handle_activities(
@@ -271,10 +242,19 @@ async def handle_activity_delete(
     except ValueError:
         return {"error": "无效的 ID"}, 400
     with plugin.db.connect() as conn:
-        cursor = conn.execute("DELETE FROM activities WHERE id = ?", (activity_id_int,))
-        deleted = int(cursor.rowcount) > 0
-    if not deleted:
-        return {"error": "未找到该活动"}, 404
+        row = conn.execute(
+            "SELECT announcement_id FROM activities WHERE id = ?", (activity_id_int,)
+        ).fetchone()
+        if row is None:
+            return {"error": "未找到该活动"}, 404
+        conn.execute("DELETE FROM activities WHERE id = ?", (activity_id_int,))
+        # Mark the announcement as read so the next extraction does not put
+        # the row straight back while its text is unchanged.
+        conn.execute(
+            "UPDATE announcements SET activity_extracted_at = datetime('now', 'localtime')"
+            " WHERE id = ?",
+            (row["announcement_id"],),
+        )
     return {"deleted": True, "id": activity_id_int}
 
 
@@ -286,41 +266,11 @@ async def handle_fetch(
     except (TypeError, ValueError):
         limit = 0
     if limit < 1 or limit > 50:
-        return {"error": "抓取条数必须在 1 到 50 之间"}, 400
-    result = await plugin.fetch_and_ingest(limit)
+        return {"error": "同步条数必须在 1 到 50 之间"}, 400
+    result = await plugin.run_sync(limit)
     if not result.get("success"):
-        return {"error": result.get("error") or "抓取失败", "detail": result}, 502
-    extracted = await plugin.extract_and_schedule()
-    result["activities_extracted"] = extracted
+        return {"error": result.get("error") or "同步失败", "detail": result}, 502
     return result
-
-
-async def handle_rebuild_fts(
-    plugin: Any, query: dict[str, Any], payload: dict[str, Any]
-) -> dict[str, Any]:
-    count = plugin.db.fts_rebuild()
-    return {"rebuilt": True, "chunks": count}
-
-
-async def handle_rebuild_embeddings(
-    plugin: Any, query: dict[str, Any], payload: dict[str, Any]
-) -> tuple[dict[str, Any], int] | dict[str, Any]:
-    provider = plugin.embedding_provider
-    if provider is None:
-        return {"error": "未配置 Embedding 提供商"}, 400
-    with plugin.db.connect() as conn:
-        cleared = int(
-            conn.execute(
-                """
-                UPDATE chunks
-                SET embedding = NULL, embedding_dim = NULL,
-                    embedding_updated_at = NULL
-                WHERE embedding IS NOT NULL
-                """
-            ).rowcount
-        )
-    indexed = await plugin.ingest.index_missing_embeddings(provider)
-    return {"cleared": cleared, "indexed": indexed}
 
 
 async def handle_logs(
@@ -376,8 +326,6 @@ ROUTE_TABLE = [
     ("/activities", ["GET"], handle_activities),
     ("/activities/<activity_id>/delete", ["POST"], handle_activity_delete),
     ("/fetch", ["POST"], handle_fetch),
-    ("/rebuild/fts", ["POST"], handle_rebuild_fts),
-    ("/rebuild/embeddings", ["POST"], handle_rebuild_embeddings),
     ("/logs", ["GET"], handle_logs),
     ("/reminders", ["GET"], handle_reminders),
 ]

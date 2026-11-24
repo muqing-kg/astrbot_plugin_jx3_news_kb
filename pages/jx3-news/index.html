@@ -3,20 +3,20 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>剑网3新闻公告知识库</title>
+    <title>剑网3活动提醒</title>
     <link rel="stylesheet" href="./style.css" />
   </head>
   <body>
     <header class="page-header">
-      <h1>剑网3新闻公告知识库</h1>
-      <p class="subtitle">抓取 JX3API 官方公告与新闻，支持问答、活动到期提醒和数据管理。</p>
+      <h1>剑网3活动提醒</h1>
+      <p class="subtitle">实时接收 JX3API 公告推送，抽取活动与截止时间，按时推送到期提醒。</p>
     </header>
 
     <nav class="tabs" id="tabs">
       <button class="tab active" data-tab="overview">总览</button>
       <button class="tab" data-tab="announcements">公告管理</button>
       <button class="tab" data-tab="reminders">到期提醒</button>
-      <button class="tab" data-tab="logs">抓取日志</button>
+      <button class="tab" data-tab="logs">同步日志</button>
     </nav>
 
     <main>
@@ -25,20 +25,18 @@
         <div class="cards" id="stat-cards"></div>
 
         <div class="card">
-          <h2>最近抓取</h2>
+          <h2>最近同步</h2>
           <div id="last-fetch" class="muted">加载中…</div>
         </div>
 
         <div class="card">
           <h2>手动操作</h2>
           <div class="toolbar">
-            <button id="btn-fetch-1">抓取 1 条</button>
-            <button id="btn-fetch-10">抓取 10 条</button>
-            <button id="btn-fetch-50" class="secondary">补抓最近 50 条</button>
-            <button id="btn-rebuild-fts" class="secondary">重建全文索引</button>
-            <button id="btn-rebuild-emb" class="secondary">重建 Embedding</button>
+            <button id="btn-fetch-1">同步 1 条</button>
+            <button id="btn-fetch-10">同步 10 条</button>
+            <button id="btn-fetch-50" class="secondary">全量核对 50 条</button>
           </div>
-          <p class="hint">日常抓取由插件每日自动执行；手动按钮用于首次安装或异常兜底。</p>
+          <p class="hint">日常由实时推送和定时同步自动执行；手动按钮用于首次安装或异常兜底。</p>
           <div id="action-result" class="action-result" hidden></div>
         </div>
 
@@ -89,14 +87,12 @@
             <summary>修订历史</summary>
             <div id="detail-revisions"></div>
           </details>
-          <h3>知识库分块（<span id="detail-chunk-count">0</span>）</h3>
-          <div id="detail-chunks"></div>
 
           <!-- 两步无弹窗删除确认 -->
           <div class="delete-zone" id="delete-zone">
             <h3>彻底删除</h3>
             <p class="hint danger">
-              彻底删除会移除公告正文、全部分块、向量、活动抽取、待发提醒和日志，
+              彻底删除会移除公告正文、活动抽取、待发提醒和日志，
               并写入指纹墓碑防止补抓恢复。删除后不可恢复。
             </p>
             <label class="check-line">
@@ -115,11 +111,12 @@
           <div class="toolbar">
             <button id="btn-act-refresh">刷新</button>
           </div>
+          <div id="act-result" class="result" hidden></div>
           <div id="activities-list"></div>
         </div>
       </section>
 
-      <!-- 抓取日志 -->
+      <!-- 同步日志 -->
       <section id="panel-logs" class="panel">
         <div class="card">
           <table class="data-table">

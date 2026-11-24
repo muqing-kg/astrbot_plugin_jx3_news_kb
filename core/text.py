@@ -1,11 +1,10 @@
-"""Text cleaning, hashing and chunking helpers."""
+"""Text cleaning, hashing and date helpers."""
 
 from __future__ import annotations
 
 import hashlib
-import html
 import re
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from html.parser import HTMLParser
 from zoneinfo import ZoneInfo
 
@@ -36,7 +35,9 @@ class _TextExtractor(HTMLParser):
     def handle_data(self, data: str) -> None:
         if self._skip_depth:
             return
-        text = html.unescape(data).strip()
+        # convert_charrefs already decoded entities; unescaping again would
+        # turn a literal "&lt;" in the text into "<".
+        text = data.strip()
         if text:
             self.parts.append(text)
             self.parts.append(" ")
@@ -69,58 +70,58 @@ def unix_to_iso(value: str | int | None, timezone_name: str = "Asia/Shanghai") -
     try:
         seconds = int(value)
     except (TypeError, ValueError):
-        return str(value)
-    return datetime.fromtimestamp(seconds, timezone.utc).astimezone(
-        ZoneInfo(timezone_name)
-    ).isoformat(timespec="seconds")
+        return ""
+    try:
+        return datetime.fromtimestamp(seconds, timezone.utc).astimezone(
+            ZoneInfo(timezone_name)
+        ).isoformat(timespec="seconds")
+    except (OverflowError, OSError, ValueError):
+        # A nonsense epoch must not abort a whole batch of announcements.
+        return ""
 
 
 def parse_date(value: str) -> str:
+    """Source date as YYYY-MM-DD, or "" when it cannot be read.
+
+    An unreadable date must not reach the database as raw text: it is
+    concatenated into ``published_at`` and SQLite's ``date()`` would return
+    NULL for the whole row.
+    """
     value = (value or "").strip()
     for pattern in ("%Y/%m/%d", "%Y-%m-%d", "%Y年%m月%d日"):
         try:
             return datetime.strptime(value, pattern).date().isoformat()
         except ValueError:
             continue
-    return value
+    match = re.search(r"(\d{4})[-/年](\d{1,2})[-/月](\d{1,2})", value)
+    if not match:
+        return ""
+    try:
+        return date(*(int(part) for part in match.groups())).isoformat()
+    except ValueError:
+        return ""
 
 
-def chunk_text(
-    text: str,
-    max_chars: int = 900,
-    overlap_chars: int = 120,
-) -> list[str]:
-    """Split long text by paragraphs, then by a sliding character window."""
-    text = (text or "").strip()
-    if not text:
-        return []
-
-    paragraphs = [part.strip() for part in re.split(r"\n{2,}", text) if part.strip()]
-    pieces: list[str] = []
-    for paragraph in paragraphs:
-        if len(paragraph) <= max_chars:
-            pieces.append(paragraph)
-            continue
-        step = max(1, max_chars - overlap_chars)
-        for start in range(0, len(paragraph), step):
-            piece = paragraph[start : start + max_chars].strip()
-            if piece:
-                pieces.append(piece)
-
-    chunks: list[str] = []
-    current: list[str] = []
-    current_len = 0
-    for piece in pieces:
-        addition = len(piece) + (1 if current else 0)
-        if current and current_len + addition > max_chars:
-            chunks.append("\n".join(current))
-            available = max(0, max_chars - len(piece) - 1)
-            tail = "\n".join(current)[-min(overlap_chars, available):] if available else ""
-            current = [tail, piece] if overlap_chars and tail else [piece]
-            current_len = len("\n".join(current))
-        else:
-            current.append(piece)
-            current_len += addition
-    if current:
-        chunks.append("\n".join(current))
-    return chunks
+def parse_push_date(value: str, timezone_name: str = "Asia/Shanghai") -> str:
+    """Push payloads carry ``MM/DD`` without a year; infer the nearest one."""
+    text = (value or "").strip()
+    match = re.fullmatch(r"(\d{1,2})/(\d{1,2})", text)
+    if not match:
+        return parse_date(text)
+    today = datetime.now(ZoneInfo(timezone_name)).date()
+    try:
+        day = date(today.year, int(match.group(1)), int(match.group(2)))
+    except ValueError:
+        return ""
+    if day > today + timedelta(days=1):
+        try:
+            day = date(today.year - 1, day.month, day.day)
+        except ValueError:  # 2 月 29 日落在平年
+            day = date(today.year - 1, 3, 1)
+    elif day < today - timedelta(days=180):
+        # Late-December pushes already announce January dates.
+        try:
+            day = date(today.year + 1, day.month, day.day)
+        except ValueError:
+            day = date(today.year + 1, 3, 1)
+    return day.isoformat()

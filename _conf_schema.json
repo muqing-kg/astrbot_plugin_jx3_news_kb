@@ -17,29 +17,29 @@
     "hint": "可选。在 JX3API 申请的访问令牌。"
   },
   "proxy": {
-    "description": "JX3API 抓取代理",
+    "description": "抓取与推送的代理",
     "type": "string",
     "default": "",
-    "hint": "可选。HTTP/HTTPS 代理地址，例如 http://127.0.0.1:7890。容器内请填容器可访问的地址。留空则直连。"
+    "hint": "可选。HTTP 代理地址，例如 http://127.0.0.1:7890；同时作用于公告抓取和实时推送。留空则直连。公告源只接受国内 IP 访问。"
   },
 
+  "sync_interval_minutes": {
+    "description": "定时同步间隔（分钟）",
+    "type": "int",
+    "default": 60,
+    "hint": "每隔多少分钟拉一次最新公告。实时推送正常时，这一轮主要用来补公告正文。"
+  },
   "initial_fetch_limit": {
     "description": "首次安装抓取条数",
     "type": "int",
     "default": 50,
-    "hint": "数据库为空时（首次安装）一次性抓取的公告条数，用于建立初始知识库。"
+    "hint": "数据库为空（首次安装）时一次性抓取的公告条数。"
   },
   "fetch_limit": {
-    "description": "每次抓取条数",
+    "description": "每次同步条数",
     "type": "int",
     "default": 10,
-    "hint": "每轮轮询拉的公告条数，同时是停机补抓后的常规上限。"
-  },
-  "fetch_interval_minutes": {
-    "description": "抓取间隔（分钟）",
-    "type": "int",
-    "default": 15,
-    "hint": "每隔多少分钟拉取一次最新公告，新公告在下一轮入库。"
+    "hint": "常规同步每轮拉的公告条数。"
   },
   "catchup_fetch_limit": {
     "description": "停机补抓条数",
@@ -47,56 +47,63 @@
     "default": 50,
     "hint": "停机超过 36 小时后恢复时，自动改用该条数补抓。"
   },
+  "daily_full_pull_time": {
+    "description": "每日全量核对时间",
+    "type": "string",
+    "default": "03:00",
+    "hint": "24 小时制 HH:MM。每天在这个时间做一次全量核对，并补齐缺少正文的公告。"
+  },
+  "daily_full_pull_limit": {
+    "description": "每日全量核对条数",
+    "type": "int",
+    "default": 50,
+    "hint": "每日全量核对时拉取的公告条数，也是该轮的补正文上限。"
+  },
+
+  "socket_enabled": {
+    "description": "启用实时公告推送",
+    "type": "bool",
+    "default": true,
+    "hint": "连上推送通道后，新公告到达即入库，随后补正文并抽取活动。关闭后只按定时同步拉取。"
+  },
+  "socket_url": {
+    "description": "推送通道地址",
+    "type": "string",
+    "default": "wss://socket.nicemoe.cn/",
+    "hint": "JX3API 事件推送地址，一般无需修改。"
+  },
+  "socket_ping_seconds": {
+    "description": "推送心跳间隔（秒）",
+    "type": "int",
+    "default": 30,
+    "hint": "心跳用于保持长连接；断线后按 5 秒起、最长 60 秒的间隔重连。"
+  },
   "timezone": {
     "description": "时区",
     "type": "string",
     "default": "Asia/Shanghai",
-    "hint": "用于计算抓取与提醒时间。"
+    "hint": "用于计算同步与提醒时间。"
   },
 
   "whitelist_groups": {
-    "description": "群白名单，问答与提醒共用",
+    "description": "提醒推送的群",
     "type": "list",
     "default": [],
-    "hint": "填写群号，或完整会话地址：平台ID:GroupMessage:群号。留空表示所有群可用。完整会话地址同时作为到期提醒的发送目标；纯群号仅用于问答过滤。"
+    "hint": "填写完整会话地址：平台ID:GroupMessage:群号。留空则不向群发送提醒。"
   },
   "whitelist_users": {
-    "description": "私聊白名单，问答与提醒共用",
+    "description": "提醒推送的私聊",
     "type": "list",
     "default": [],
-    "hint": "填写用户号，或完整会话地址：平台ID:FriendMessage:用户号。留空表示所有私聊可用。完整会话地址同时作为到期提醒的发送目标；纯用户号仅用于问答过滤。"
-  },
-  "allow_group": {
-    "description": "群聊问答开关",
-    "type": "bool",
-    "default": true,
-    "invisible": true
-  },
-  "allow_private": {
-    "description": "私聊问答开关",
-    "type": "bool",
-    "default": true,
-    "invisible": true
+    "hint": "填写完整会话地址：平台ID:FriendMessage:用户号。留空则不向私聊发送提醒。"
   },
 
   "llm_provider_id": {
-    "description": "问答与活动抽取的 LLM 提供商",
+    "description": "活动抽取的 LLM 提供商",
     "type": "string",
     "default": "",
     "_special": "select_provider",
-    "hint": "留空时使用 AstrBot 默认提供商，模型使用该提供商的默认模型。"
-  },
-  "embedding_provider_id": {
-    "description": "向量召回的 Embedding 提供商",
-    "type": "string",
-    "default": "",
-    "hint": "填写提供商 ID，用于语义相似度召回。留空则只使用全文检索。"
-  },
-  "reranker_provider_id": {
-    "description": "重排序的 Reranker 提供商",
-    "type": "string",
-    "default": "",
-    "hint": "填写提供商 ID，对召回结果做精排。留空则不启用。"
+    "hint": "从公告正文里抽取活动名称与截止时间。留空时使用 AstrBot 默认提供商。"
   },
 
   "reminder_enabled": {

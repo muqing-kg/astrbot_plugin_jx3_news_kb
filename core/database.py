@@ -1,4 +1,4 @@
-"""SQLite storage for the JX3 news knowledge base."""
+"""SQLite storage for JX3 announcements, activities and reminders."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 3
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -30,6 +30,7 @@ CREATE TABLE IF NOT EXISTS announcements (
     published_at TEXT NOT NULL,
     updated_at_source TEXT NOT NULL,
     activity_extracted_at TEXT,
+    activity_extract_mode TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
     modified_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
 );
@@ -48,34 +49,6 @@ CREATE TABLE IF NOT EXISTS announcement_revisions (
     updated_at_source TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
     UNIQUE(announcement_id, content_hash)
-);
-
-CREATE TABLE IF NOT EXISTS chunks (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    announcement_id INTEGER NOT NULL REFERENCES announcements(id) ON DELETE CASCADE,
-    revision_id INTEGER NOT NULL REFERENCES announcement_revisions(id) ON DELETE CASCADE,
-    chunk_index INTEGER NOT NULL,
-    title TEXT NOT NULL,
-    announcement_date TEXT NOT NULL,
-    announcement_type TEXT NOT NULL,
-    url TEXT NOT NULL,
-    content TEXT NOT NULL,
-    embedding BLOB,
-    embedding_dim INTEGER,
-    embedding_updated_at TEXT,
-    created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
-    UNIQUE(revision_id, chunk_index)
-);
-
-CREATE INDEX IF NOT EXISTS idx_chunks_announcement ON chunks(announcement_id);
-CREATE INDEX IF NOT EXISTS idx_chunks_embedding ON chunks(embedding_updated_at);
-
-CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
-    title,
-    content,
-    announcement_id UNINDEXED,
-    chunk_id UNINDEXED,
-    tokenize='trigram'
 );
 
 CREATE TABLE IF NOT EXISTS activities (
@@ -161,9 +134,9 @@ class Database:
     def connect(self) -> Iterator[sqlite3.Connection]:
         conn = sqlite3.connect(self.path, timeout=30)
         conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA foreign_keys = ON")
-        conn.execute("PRAGMA journal_mode = WAL")
         try:
+            conn.execute("PRAGMA foreign_keys = ON")
+            conn.execute("PRAGMA journal_mode = WAL")
             yield conn
             conn.commit()
         except Exception:
@@ -175,38 +148,42 @@ class Database:
     def initialize(self) -> None:
         with self.connect() as conn:
             conn.executescript(SCHEMA)
+            stored = conn.execute(
+                "SELECT value FROM schema_meta WHERE key = 'version'"
+            ).fetchone()
+            try:
+                version = int(stored["value"]) if stored else 0
+            except (TypeError, ValueError):
+                version = 0
+            if version < 2:
+                self._drop_legacy_tables(conn)
+            if version < 3:
+                self._add_extract_mode(conn)
             conn.execute(
-                "INSERT OR IGNORE INTO schema_meta(key, value) VALUES('version', ?)",
+                """
+                INSERT INTO schema_meta(key, value) VALUES('version', ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                """,
                 (str(SCHEMA_VERSION),),
             )
 
-    def fts_rebuild(self) -> int:
-        with self.connect() as conn:
-            conn.execute("DELETE FROM chunks_fts")
-            rows = conn.execute(
-                """
-                SELECT id, announcement_id, title, content
-                FROM chunks
-                ORDER BY id
-                """
-            ).fetchall()
-            conn.executemany(
-                """
-                INSERT INTO chunks_fts(rowid, title, content, announcement_id, chunk_id)
-                VALUES (?, ?, ?, ?, ?)
-                """,
-                [
-                    (
-                        row["id"],
-                        row["title"],
-                        row["content"],
-                        row["announcement_id"],
-                        row["id"],
-                    )
-                    for row in rows
-                ],
+    @staticmethod
+    def _drop_legacy_tables(conn: sqlite3.Connection) -> None:
+        """v1 stored retrieval chunks and a FTS index; nothing reads them now."""
+        for table in ("chunks_fts", "chunks"):
+            conn.execute(f"DROP TABLE IF EXISTS {table}")
+
+    @staticmethod
+    def _add_extract_mode(conn: sqlite3.Connection) -> None:
+        """v2 has no record of which extractor produced an announcement's rows."""
+        columns = {
+            row["name"] for row in conn.execute("PRAGMA table_info(announcements)")
+        }
+        if "activity_extract_mode" not in columns:
+            conn.execute(
+                "ALTER TABLE announcements "
+                "ADD COLUMN activity_extract_mode TEXT NOT NULL DEFAULT ''"
             )
-            return len(rows)
 
     def count(self, table: str) -> int:
         if not table.replace("_", "").isalnum():

@@ -329,6 +329,34 @@ def test_remaining_text_variants(tmp_path):
     )
 
 
+def test_stale_pending_slot_is_expired_not_sent(tmp_path):
+    """A slot that came due while the plugin was down is dropped, not sent late."""
+    scheduler = _make_scheduler(tmp_path)
+    announcement_id = _insert_announcement(scheduler.db)
+    activity_id = _insert_activity(
+        scheduler.db, announcement_id, end_time="2099-09-17T07:00:00+08:00"
+    )
+    stale = (scheduler.now() - timedelta(hours=3)).isoformat(timespec="seconds")
+    with scheduler.db.connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO reminders(
+                activity_id, target_type, target_id, scheduled_at, message_text
+            ) VALUES (?, 'group', 'fake:GroupMessage:10001', ?, '旧槽位')
+            """,
+            (activity_id, stale),
+        )
+
+    scheduler.create_pending_reminders(TARGETS)
+
+    with scheduler.db.connect() as conn:
+        status = conn.execute(
+            "SELECT status FROM reminders WHERE scheduled_at = ?", (stale,)
+        ).fetchone()[0]
+    assert status == "cancelled"
+    assert all(row["scheduled_at"] != stale for row in scheduler.due_reminders())
+
+
 def test_create_pending_reminders_is_idempotent(tmp_path):
     scheduler = _make_scheduler(tmp_path)
     announcement_id = _insert_announcement(scheduler.db)
@@ -447,7 +475,7 @@ def test_from_config_clamps_and_disables():
 
 
 def test_parse_session_address_variants():
-    from core.scheduler import extract_session_id, parse_session_address
+    from core.scheduler import parse_session_address
 
     assert parse_session_address("aiocqhttp:GroupMessage:123") == (
         "group",
@@ -460,9 +488,6 @@ def test_parse_session_address_variants():
     assert parse_session_address("10086") is None
     assert parse_session_address("bad:Type:1") is None
     assert parse_session_address("a:GroupMessage:") is None
-    assert extract_session_id("aiocqhttp:GroupMessage:123") == "123"
-    assert extract_session_id("10086") == "10086"
-    assert extract_session_id("") == ""
 
 
 def test_merge_reminder_texts_combines_same_day_items():
@@ -477,12 +502,12 @@ def test_merge_reminder_texts_combines_same_day_items():
             "【活动B 到期提醒】\n待办：领取\n截止：2026-09-17 07:00",
         ]
     )
-    assert merged.startswith("【今日到期提醒 · 共 2 项】")
+    assert merged.startswith("【到期提醒 · 共 2 项】")
     assert "【活动A 到期提醒】" in merged
     assert "【活动B 到期提醒】" in merged
     # Items are separated by a blank line, no divider lines.
     assert "———" not in merged
-    assert "【今日到期提醒 · 共 2 项】\n\n【活动A 到期提醒】" in merged
+    assert "【到期提醒 · 共 2 项】\n\n【活动A 到期提醒】" in merged
 
 
 def test_merge_dedupes_same_source_link():
@@ -602,21 +627,9 @@ def test_due_reminders_and_mark(tmp_path):
     assert len(scheduler.due_reminders()) == 2
 
 
-def test_cancel_reminders_for_announcement(tmp_path):
+def test_status_snapshot_passes_next_run_through(tmp_path):
     scheduler = _make_scheduler(tmp_path)
-    announcement_id = _insert_announcement(scheduler.db)
-    _insert_activity(
-        scheduler.db, announcement_id, end_time="2099-09-17T07:00:00+08:00"
-    )
-    scheduler.create_pending_reminders(TARGETS)
-    cancelled = scheduler.cancel_reminders_for_announcement(announcement_id)
-    assert cancelled == 4
-
-
-def test_status_snapshot_next_run(tmp_path):
-    scheduler = _make_scheduler(tmp_path)
-    assert scheduler.status_snapshot(15)["last_fetch"] is None
-    assert scheduler.next_run_at(15).endswith("+08:00")
+    assert scheduler.status_snapshot("2026-11-02T12:15:00+08:00")["last_fetch"] is None
 
     with scheduler.db.connect() as conn:
         conn.execute(
@@ -626,4 +639,26 @@ def test_status_snapshot_next_run(tmp_path):
             ) VALUES ('2026-11-02T12:00:00+08:00', '2026-11-02T12:00:05+08:00', 1, 10)
             """
         )
-    assert scheduler.status_snapshot(15)["next_fetch_at"] == "2026-11-02T12:15:00+08:00"
+    snapshot = scheduler.status_snapshot("2026-11-02T12:15:00+08:00")
+    assert snapshot["next_fetch_at"] == "2026-11-02T12:15:00+08:00"
+    assert snapshot["last_fetch"]["success"] == 1
+
+
+def test_parse_moment_returns_none_for_unreadable_values(tmp_path):
+    scheduler = _make_scheduler(tmp_path)
+    assert scheduler.parse_moment("") is None
+    assert scheduler.parse_moment("待定") is None
+    assert scheduler.parse_moment("2026-09-17").tzinfo is not None
+
+
+def test_create_pending_survives_a_date_only_end_time(tmp_path):
+    """One sloppy stored timestamp must not abort the whole rebuild."""
+    scheduler = _make_scheduler(tmp_path)
+    announcement_id = _insert_announcement(scheduler.db)
+    _insert_activity(scheduler.db, announcement_id, end_time="2099-09-17")
+
+    scheduler.create_pending_reminders(TARGETS)
+
+    with scheduler.db.connect() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM reminders").fetchone()[0] >= 1
+

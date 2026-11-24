@@ -9,7 +9,7 @@ class FakeResponse:
         self._payload = payload
         self._text = text
 
-    async def json(self):
+    async def json(self, content_type=None):
         return self._payload
 
     async def text(self):

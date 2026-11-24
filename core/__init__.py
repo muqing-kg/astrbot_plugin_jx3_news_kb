@@ -1,1 +1,1 @@
-"""Core modules for the JX3 news knowledge base plugin."""
+"""Core modules for the JX3 activity reminder plugin."""

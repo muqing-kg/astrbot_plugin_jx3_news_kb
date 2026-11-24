@@ -1,60 +1,63 @@
-"""AstrBot plugin entry: JX3 news knowledge base, QA and reminders."""
+"""AstrBot plugin entry: JX3 announcement ingestion and activity reminders."""
 
 from __future__ import annotations
 
 import asyncio
-import re
+import logging
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from astrbot.api.event import AstrMessageEvent, MessageChain, filter
+from astrbot.api.event import MessageChain, filter
 from astrbot.api.star import Context, Star
 from astrbot.api.web import error_response, json_response, request as web_request
 from astrbot.core.utils.astrbot_path import get_astrbot_plugin_data_path
 
 try:
     # AstrBot loads this file as package ``data.plugins.<name>.main``.
-    from astrbot.core.log import LogManager
     from .core.activities import ActivityService
     from .core.database import Database
     from .core.ingest import IngestService
     from .core.jx3api import NewsClient
-    from .core.qa import QAService
-    from .core.search import SearchService
     from .core.scheduler import (
-        DEFAULT_FETCH_INTERVAL_MINUTES,
         ReminderTargets,
         SchedulerService,
-        extract_session_id,
         merge_reminder_texts,
+        parse_hhmm,
     )
-    from .core.text import parse_date, strip_html
+    from .core.socket import DEFAULT_SOCKET_URL, PushClient
     from .web_api.routes import ROUTE_TABLE
 except ImportError:  # imported as a top-level module (tests, direct run)
     from core.activities import ActivityService
     from core.database import Database
     from core.ingest import IngestService
     from core.jx3api import NewsClient
-    from core.qa import QAService
-    from core.search import SearchService
     from core.scheduler import (
-        DEFAULT_FETCH_INTERVAL_MINUTES,
         ReminderTargets,
         SchedulerService,
-        extract_session_id,
         merge_reminder_texts,
+        parse_hhmm,
     )
-    from core.text import parse_date, strip_html
+    from core.socket import DEFAULT_SOCKET_URL, PushClient
     from web_api.routes import ROUTE_TABLE
 
-# Official per-plugin logger: attaches the enricher filter (plugin_tag) and
-# the WebUI log queue handler; a raw logging.getLogger child of "astrbot"
-# would crash AstrBot's queue handler with KeyError: plugin_tag.
-logger = LogManager.get_plugin_logger("jx3_news_kb")
+try:
+    # Official per-plugin logger: attaches the enricher filter (plugin_tag) and
+    # the WebUI log queue handler; a raw logging.getLogger child of "astrbot"
+    # would make that handler skip the record. Kept out of the import block
+    # above so an AstrBot internal move degrades logging, not plugin loading.
+    from astrbot.core.log import LogManager
+
+    logger = LogManager.get_plugin_logger("jx3_news_kb")
+except Exception:  # noqa: BLE001 - logging must never stop the plugin loading
+    logger = logging.getLogger("astrbot.plugin.jx3_news_kb")
 
 PLUGIN_NAME = "astrbot_plugin_jx3_news_kb"
 REMINDER_LOOP_INTERVAL = 60
+DEFAULT_SYNC_INTERVAL_MINUTES = 60
+DEFAULT_DAILY_PULL_TIME = "03:00"
+DEFAULT_DAILY_PULL_LIMIT = 50
 
 
 def _as_int(config: Any, key: str, default: int) -> int:
@@ -64,30 +67,9 @@ def _as_int(config: Any, key: str, default: int) -> int:
         return default
 
 
-def _announcement_key(url: str) -> str:
-    """Identify an announcement by its ``id`` query value, else by full URL."""
-    text = str(url or "").strip()
-    match = re.search(r"[?&]id=(\d+)", text)
-    if match:
-        return match.group(1)
-    return text
-
-
-def _announcement_context(
-    title: Any,
-    announcement_type: Any,
-    url: Any,
-    published_at: Any,
-    content: str,
-) -> dict[str, Any]:
-    """Shape a loaded announcement like a search hit for the QA prompt."""
-    return {
-        "announcement_date": str(published_at or "")[:10],
-        "type": str(announcement_type or "官方公告"),
-        "title": str(title or ""),
-        "url": str(url or ""),
-        "content": content,
-    }
+def _as_limit(config: Any, key: str, default: int) -> int:
+    """Fetch limits outside 1..50 make every sync fail; clamp at the config edge."""
+    return min(50, max(1, _as_int(config, key, default)))
 
 
 class JX3NewsKBPlugin(Star):
@@ -102,25 +84,14 @@ class JX3NewsKBPlugin(Star):
 
         self.ingest = IngestService(self.db, self.timezone.key)
         self.activity_service = ActivityService(self.db, self.timezone.key)
-        self.search_service = SearchService(
-            self.db,
-            embedding_provider=lambda: self.embedding_provider,
-            reranker_provider=lambda: self.reranker_provider,
-        )
-        self.qa = QAService(
-            self.search_service,
-            context=context,
-            llm_provider_id=str(self.config.get("llm_provider_id") or ""),
-            link_resolver=self.resolve_announcement_link,
-        )
         self.scheduler = SchedulerService(
             self.db,
             self.ingest,
             self.activity_service,
             timezone_name=self.timezone.key,
-            initial_fetch_limit=_as_int(self.config, "initial_fetch_limit", 50),
-            fetch_limit=_as_int(self.config, "fetch_limit", 10),
-            catchup_fetch_limit=_as_int(self.config, "catchup_fetch_limit", 50),
+            initial_fetch_limit=_as_limit(self.config, "initial_fetch_limit", 50),
+            fetch_limit=_as_limit(self.config, "fetch_limit", 10),
+            catchup_fetch_limit=_as_limit(self.config, "catchup_fetch_limit", 50),
         )
         self.client = NewsClient(
             base_url=str(self.config.get("api_base_url") or "https://www.jx3api.com"),
@@ -128,8 +99,20 @@ class JX3NewsKBPlugin(Star):
             token=str(self.config.get("api_token") or ""),
             proxy=str(self.config.get("proxy") or ""),
         )
+        self.push = PushClient(
+            url=str(self.config.get("socket_url") or DEFAULT_SOCKET_URL),
+            proxy=str(self.config.get("proxy") or ""),
+            ping_seconds=_as_int(self.config, "socket_ping_seconds", 30),
+            logger=logger,
+        )
         self._background_tasks: list[asyncio.Task] = []
-        self._provider_probe: dict[str, Any] | None = None
+        self._sync_lock = asyncio.Lock()
+        self._backfill_task: asyncio.Task | None = None
+        # Day the daily full pull last ran; a sync straddling the configured
+        # time must not push the pull to tomorrow.
+        self._daily_done: date | None = None
+        self._daily_cooldown_until: datetime | None = None
+        self._backfill_pending = False
         self._register_routes()
         self._try_start_background_tasks()
 
@@ -141,78 +124,6 @@ class JX3NewsKBPlugin(Star):
             return ZoneInfo(name)
         except (ZoneInfoNotFoundError, ValueError):
             return ZoneInfo("Asia/Shanghai")
-
-    def _resolve_embedding_provider(self) -> Any | None:
-        provider_id = str(self.config.get("embedding_provider_id") or "").strip()
-        if not provider_id:
-            return None
-        provider = self.context.get_provider_by_id(provider_id)
-        if provider is None:
-            logger.warning("未找到 Embedding 提供商 %s", provider_id)
-            return None
-        if not hasattr(provider, "get_embeddings_batch"):
-            logger.warning(
-                "提供商 %s 不支持向量接口，向量召回已禁用",
-                provider_id,
-            )
-            return None
-        return provider
-
-    def _resolve_reranker_provider(self) -> Any | None:
-        provider_id = str(self.config.get("reranker_provider_id") or "").strip()
-        if not provider_id:
-            return None
-        provider = self.context.get_provider_by_id(provider_id)
-        if provider is None or not hasattr(provider, "rerank"):
-            logger.warning("Reranker 提供商 %s 不可用", provider_id)
-            return None
-        return provider
-
-    @property
-    def embedding_provider(self) -> Any | None:
-        return self._resolve_embedding_provider()
-
-    @property
-    def reranker_provider(self) -> Any | None:
-        return self._resolve_reranker_provider()
-
-    async def probe_providers(self) -> dict[str, Any]:
-        """Probe embedding dimension and reranker availability.
-
-        Providers are initialized after plugins during AstrBot startup, so a
-        failed probe is not cached until the embedding probe succeeds.
-        """
-        if self._provider_probe is not None and self._provider_probe["embedding"]["available"]:
-            return self._provider_probe
-        self._provider_probe = await self._probe_providers_once()
-        return self._provider_probe
-
-    async def _probe_providers_once(self) -> dict[str, Any]:
-        probe: dict[str, Any] = {
-            "embedding": {
-                "available": self.embedding_provider is not None,
-                "provider_id": str(self.config.get("embedding_provider_id") or ""),
-            },
-            "reranker": {
-                "available": self.reranker_provider is not None,
-                "provider_id": str(self.config.get("reranker_provider_id") or ""),
-            },
-        }
-        if self.embedding_provider is not None:
-            try:
-                vector = await self.embedding_provider.get_embedding("维度探测")
-                probe["embedding"]["dim"] = len(vector)
-            except Exception as exc:  # noqa: BLE001 - probe must not crash stats
-                probe["embedding"]["available"] = False
-                probe["embedding"]["error"] = str(exc)[:200]
-        if self.reranker_provider is not None:
-            try:
-                await self.reranker_provider.rerank("能力探测", ["测试", "文档"], top_n=2)
-                probe["reranker"]["ok"] = True
-            except Exception as exc:  # noqa: BLE001
-                probe["reranker"]["ok"] = False
-                probe["reranker"]["error"] = str(exc)[:200]
-        return probe
 
     async def _llm_provider(self) -> Any | None:
         provider_id = str(self.config.get("llm_provider_id") or "").strip()
@@ -231,7 +142,7 @@ class JX3NewsKBPlugin(Star):
                 f"/{PLUGIN_NAME}{route}",
                 self._wrap_handler(handler),
                 list(methods),
-                f"JX3 news KB {route}",
+                f"JX3 activity reminder {route}",
             )
 
     def _wrap_handler(self, handler: Any) -> Any:
@@ -260,12 +171,10 @@ class JX3NewsKBPlugin(Star):
 
         return view
 
-    # ---------- pipeline used by daily job and web API ----------
+    # ---------- pipeline used by background jobs and web API ----------
 
     async def fetch_and_ingest(self, limit: int | None = None) -> dict[str, Any]:
-        return await self.scheduler.fetch_and_ingest(
-            self.client, self.embedding_provider, limit
-        )
+        return await self.scheduler.fetch_and_ingest(self.client, limit)
 
     async def extract_and_schedule(self, announcement_ids: list[int] | None = None) -> int:
         created = await self.activity_service.extract_for_announcements(
@@ -276,61 +185,16 @@ class JX3NewsKBPlugin(Star):
             self.scheduler.create_pending_reminders(targets, announcement_ids)
         return created
 
-    async def resolve_announcement_link(self, url: str) -> dict[str, Any] | None:
-        """Answer material for a pasted announcement link: local row, else JX3API."""
-        target = _announcement_key(url)
-        if not target:
-            return None
-        # LIKE 只做子串粗筛（id=1335902 也会命中 id=13359020），再按键精确比对。
-        with self.db.connect() as conn:
-            rows = conn.execute(
-                """
-                SELECT title, type, url, content_text, published_at
-                FROM announcements
-                WHERE url LIKE ?
-                ORDER BY published_at DESC
-                """,
-                (f"%{target}%",),
-            ).fetchall()
-        row = next(
-            (
-                candidate
-                for candidate in rows
-                if _announcement_key(candidate["url"]) == target
-                and str(candidate["content_text"] or "").strip()
-            ),
-            None,
-        )
-        if row is not None:
-            return _announcement_context(
-                row["title"],
-                row["type"],
-                row["url"],
-                row["published_at"],
-                row["content_text"],
-            )
+    async def fetch_job(self, limit: int | None = None) -> dict[str, Any]:
+        result = await self.fetch_and_ingest(limit)
+        self.scheduler.prune_logs()
+        if result.get("success"):
+            await self.extract_and_schedule()
+        return result
 
-        try:
-            items = await self.client.fetch(min(50, self.scheduler.catchup_fetch_limit))
-        except Exception:  # noqa: BLE001 - upstream may be down; fall back to the index
-            logger.warning("按链接抓取公告失败：%s", url, exc_info=True)
-            return None
-        for item in items:
-            desc = item.get("desc") or {}
-            item_url = str(item.get("url") or desc.get("url") or "").strip()
-            if _announcement_key(item_url) != target:
-                continue
-            content = strip_html(desc.get("content")) or strip_html(desc.get("description"))
-            if not content.strip():
-                return None
-            return _announcement_context(
-                item.get("title") or desc.get("title"),
-                item.get("type"),
-                item_url,
-                parse_date(str(item.get("date") or "")),
-                content,
-            )
-        return None
+    async def run_sync(self, limit: int | None = None) -> dict[str, Any]:
+        """One guarded sync round, shared by the loops and the web API."""
+        return await self._run_fetch_job_guarded(limit)
 
     def reminder_target_count(self) -> int:
         """Whitelist entries usable as reminder destinations (full addresses)."""
@@ -341,13 +205,6 @@ class JX3NewsKBPlugin(Star):
         return self.scheduler.valid_slot_keys(
             ReminderTargets.from_config(self.config)
         )
-
-    async def fetch_job(self) -> dict[str, Any]:
-        result = await self.fetch_and_ingest()
-        self.scheduler.prune_logs()
-        if result.get("success"):
-            await self.extract_and_schedule()
-        return result
 
     # ---------- reminders ----------
 
@@ -372,11 +229,15 @@ class JX3NewsKBPlugin(Star):
         for (target_type, target_id), items in groups.items():
             text = merge_reminder_texts([item["message_text"] for item in items])
             ok, error = await self._send_text(target_type, target_id, text)
-            status = "sent" if ok else "failed"
+            # A failed send stays pending so the next scan retries it; the
+            # rebuild turns it into a cancelled slot once the grace window ends.
+            status = "sent" if ok else "pending"
             for item in items:
                 self.scheduler.mark_reminder(int(item["id"]), status, error)
             if ok:
                 sent += len(items)
+            else:
+                logger.warning("提醒发送失败（%s）：%s", target_id, error)
         return sent
 
     # ---------- background loops ----------
@@ -402,55 +263,138 @@ class JX3NewsKBPlugin(Star):
     def _start_background_tasks(self) -> None:
         if self._background_tasks:
             return
-        self._background_tasks.append(
-            asyncio.create_task(self._fetch_loop(), name="jx3-news-fetch")
-        )
-        self._background_tasks.append(
-            asyncio.create_task(self._reminder_loop(), name="jx3-news-reminders")
-        )
-        logger.info("剑网3新闻公告知识库后台任务已启动")
+        for coro, name in (
+            (self._sync_loop(), "jx3-announcement-sync"),
+            (self._push_loop(), "jx3-announcement-push"),
+            (self._reminder_loop(), "jx3-reminder-dispatch"),
+        ):
+            self._background_tasks.append(asyncio.create_task(coro, name=name))
+        logger.info("剑网3活动提醒后台任务已启动")
 
     def background_alive(self) -> bool:
         return bool(self._background_tasks) and any(
             not task.done() for task in self._background_tasks
         )
 
-    async def _fetch_loop(self) -> None:
-        # Fresh install: build the initial knowledge base right away.
-        try:
-            if self.db.count("announcements") == 0:
-                await self._run_fetch_job_guarded()
-            # Re-create future reminder slots on every start so a mid-cycle
-            # update or restart does not miss today's remaining slots.
-            if bool(self.config.get("reminder_enabled", True)):
-                targets = ReminderTargets.from_config(self.config)
-                if not targets.as_pairs():
-                    logger.warning(
-                        "到期提醒已启用，但白名单中没有可用的完整会话地址"
-                        "（平台ID:GroupMessage:群号 或 平台ID:FriendMessage:用户号），"
-                        "提醒不会发送"
-                    )
-                else:
-                    self.scheduler.create_pending_reminders(targets)
-        except Exception:  # noqa: BLE001 - the loop must survive startup races
-            logger.exception("启动时抓取/提醒调度检查失败")
-        while True:
-            interval = self._fetch_interval_seconds()
-            logger.debug("next fetch in %.0f seconds", interval)
-            await asyncio.sleep(interval)
-            await self._run_fetch_job_guarded()
-
-    async def _run_fetch_job_guarded(self) -> None:
-        try:
-            result = await self.fetch_job()
-            if not result.get("success"):
-                logger.warning("抓取失败：%s", result.get("error"))
-        except Exception:  # noqa: BLE001 - the loop must survive failures
-            logger.exception("抓取任务异常终止")
-
-    def _fetch_interval_seconds(self) -> float:
-        minutes = _as_int(self.config, "fetch_interval_minutes", DEFAULT_FETCH_INTERVAL_MINUTES)
+    def _sync_interval_seconds(self) -> float:
+        minutes = _as_int(self.config, "sync_interval_minutes", DEFAULT_SYNC_INTERVAL_MINUTES)
         return float(max(1, minutes) * 60)
+
+    def next_sync(self) -> tuple[float, bool]:
+        """Seconds until the next sync, and whether it is the daily full pull."""
+        now = datetime.now(self.timezone)
+        hour, minute = parse_hhmm(
+            str(self.config.get("daily_full_pull_time") or DEFAULT_DAILY_PULL_TIME),
+            (3, 0),
+        )
+        daily = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if daily <= now and self._daily_done == now.date():
+            daily += timedelta(days=1)
+        if daily <= now:
+            # The pull time already passed today and has not run yet. Wait out
+            # the previous failure instead of retrying in a tight loop.
+            if self._daily_cooldown_until and now < self._daily_cooldown_until:
+                return (self._daily_cooldown_until - now).total_seconds(), True
+            return 0.0, True
+        interval = self._sync_interval_seconds()
+        if (daily - now).total_seconds() <= interval:
+            return (daily - now).total_seconds(), True
+        return interval, False
+
+    async def _sync_loop(self) -> None:
+        try:
+            await self._startup_sync()
+        except Exception:  # noqa: BLE001 - the loop must survive startup races
+            logger.exception("启动同步/提醒调度检查失败")
+        while True:
+            wait, daily = self.next_sync()
+            await asyncio.sleep(wait)
+            limit = None
+            run_day = datetime.now(self.timezone).date()
+            if daily:
+                limit = _as_limit(
+                    self.config, "daily_full_pull_limit", DEFAULT_DAILY_PULL_LIMIT
+                )
+            result = await self._run_fetch_job_guarded(limit)
+            # Only a successful pull counts for the day it was planned for: a
+            # failure stays eligible for the catch-up branch of next_sync,
+            # after a cooldown so a dead endpoint is not hammered.
+            if daily:
+                if result.get("success"):
+                    self._daily_done = run_day
+                    self._daily_cooldown_until = None
+                else:
+                    self._daily_cooldown_until = datetime.now(self.timezone) + (
+                        timedelta(seconds=self._sync_interval_seconds())
+                    )
+
+    async def _startup_sync(self) -> None:
+        # Fresh install: build the initial announcement base right away.
+        if self.db.count("announcements") == 0:
+            result = await self._run_fetch_job_guarded(None)
+            if result.get("success"):
+                self._daily_done = datetime.now(self.timezone).date()
+        # Re-create future reminder slots on every start so a mid-cycle
+        # update or restart does not miss today's remaining slots.
+        if bool(self.config.get("reminder_enabled", True)):
+            targets = ReminderTargets.from_config(self.config)
+            if not targets.as_pairs():
+                logger.warning(
+                    "到期提醒已启用，但白名单中没有可用的完整会话地址"
+                    "（平台ID:GroupMessage:群号 或 平台ID:FriendMessage:用户号），"
+                    "提醒不会发送"
+                )
+            else:
+                self.scheduler.create_pending_reminders(targets)
+
+    def next_sync_at(self) -> str:
+        """Next scheduled sync as wall-clock text, for the status page."""
+        wait, _ = self.next_sync()
+        return (datetime.now(self.timezone) + timedelta(seconds=wait)).isoformat(
+            timespec="seconds"
+        )
+
+    async def _run_fetch_job_guarded(self, limit: int | None = None) -> dict[str, Any]:
+        # Push arrivals, the timed sync and the daily full pull share one lock
+        # so two of them never write the same announcement at once.
+        async with self._sync_lock:
+            try:
+                result = await self.fetch_job(limit)
+            except Exception as exc:  # noqa: BLE001 - the loop must survive failures
+                logger.exception("同步任务异常终止")
+                return {"success": False, "error": str(exc)}
+        if not result.get("success"):
+            logger.warning("同步失败：%s", result.get("error"))
+        return result
+
+    async def _on_push(self, detail: dict[str, Any]) -> None:
+        """Write the pushed announcement at once; its body is filled in later."""
+        outcome = self.ingest.ingest_push(detail)
+        logger.info("推送入库：%s（%s）", detail.get("title") or "", outcome)
+        self._request_backfill()
+
+    def _request_backfill(self) -> None:
+        # Coalesce a burst of pushes into one body fetch instead of one per
+        # frame; the reader keeps draining the socket meanwhile.
+        if self._backfill_task is not None and not self._backfill_task.done():
+            self._backfill_pending = True
+            return
+        self._backfill_task = asyncio.create_task(
+            self._drain_backfill(), name="jx3-announcement-backfill"
+        )
+
+    async def _drain_backfill(self) -> None:
+        while True:
+            self._backfill_pending = False
+            await self._run_fetch_job_guarded(None)
+            if not self._backfill_pending:
+                return
+
+    async def _push_loop(self) -> None:
+        if not bool(self.config.get("socket_enabled", True)):
+            logger.info("实时推送已关闭，仅按定时同步拉取公告")
+            return
+        await self.push.run(self._on_push)
 
     async def _reminder_loop(self) -> None:
         while True:
@@ -463,52 +407,10 @@ class JX3NewsKBPlugin(Star):
     async def terminate(self) -> None:
         tasks = list(self._background_tasks)
         self._background_tasks.clear()
+        if self._backfill_task is not None:
+            tasks.append(self._backfill_task)
+            self._backfill_task = None
         for task in tasks:
             task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
-
-    # ---------- message handling ----------
-
-    @filter.event_message_type(filter.EventMessageType.ALL)
-    async def on_message(self, event: AstrMessageEvent):
-        """Answer awakened messages that ask about JX3 announcements.
-
-        ``is_wake`` is forced to True for every message matched by this plugin's
-        event listener; ``is_at_or_wake_command`` only reflects a real wake
-        (wake prefix, @bot, reply-to-bot or private chat). The answer is sent
-        directly and the event stopped so AstrBot's default LLM stage does not
-        answer the same question a second time.
-        """
-        if not getattr(event, "is_at_or_wake_command", False):
-            return
-        question = (event.message_str or "").strip()
-        if not question or not self._session_allowed(event):
-            return
-        try:
-            relevant, answer = await self.qa.answer(question, event.unified_msg_origin)
-        except Exception:  # noqa: BLE001 - never break the bot's main flow
-            logger.exception("问答流程执行失败")
-            return
-        if relevant and answer:
-            await event.send(event.plain_result(answer))
-            event.stop_event()
-
-    def _session_allowed(self, event: AstrMessageEvent) -> bool:
-        group_id = str(event.get_group_id() or "").strip()
-        if group_id:
-            if not bool(self.config.get("allow_group", True)):
-                return False
-            whitelist = [
-                extract_session_id(str(item))
-                for item in (self.config.get("whitelist_groups") or [])
-            ]
-            return not whitelist or group_id in whitelist
-        if not bool(self.config.get("allow_private", True)):
-            return False
-        whitelist = [
-            extract_session_id(str(item))
-            for item in (self.config.get("whitelist_users") or [])
-        ]
-        sender = str(event.get_sender_id() or "").strip()
-        return not whitelist or sender in whitelist

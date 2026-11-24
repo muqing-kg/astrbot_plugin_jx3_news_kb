@@ -1,4 +1,4 @@
-/* JX3 news knowledge base Plugin Page. */
+/* JX3 activity reminder plugin page. */
 const bridge = window.AstrBotPluginPage;
 
 const state = {
@@ -17,7 +17,9 @@ function fmtDateTime(value) {
 function showError(outputEl, error) {
   outputEl.hidden = false;
   outputEl.classList.add("error");
-  outputEl.textContent = `操作失败：${error.message || error}`;
+  // Bridge failures arrive as Error, as {error: "..."} or as {detail: "..."}.
+  const message = error?.message || error?.error || error?.detail || String(error);
+  outputEl.textContent = `操作失败：${message}`;
 }
 
 function showInfo(outputEl, message) {
@@ -58,19 +60,16 @@ function setupTabs() {
 /* ---------- overview ---------- */
 function renderStats(data) {
   const counts = data.counts || {};
-  const providers = data.providers || {};
-  const embedding = providers.embedding || {};
-  const reranker = providers.reranker || {};
+  const syncMinutes = data.sync_interval_minutes ?? 60;
   const cards = [
     ["公告总数", counts.announcements],
-    ["文本分块", counts.chunks],
-    ["向量数", counts.embeddings],
     ["活动抽取", counts.activities],
     ["待发提醒（条）", data.pending_reminders],
     ["提醒目标", data.reminder_targets ?? 0],
     ["后台任务", data.scheduler_alive ? "运行中" : "未运行"],
-    ["Embedding 维度", embedding.available ? (embedding.dim ?? "探测中") : "未启用"],
-    ["Reranker", reranker.available ? "已启用" : "未启用"],
+    ["推送通道", data.socket_enabled ? "已启用" : "未启用"],
+    ["同步间隔", `${syncMinutes} 分钟`],
+    ["每日全量核对", data.daily_full_pull_time || "03:00"],
   ];
   $("stat-cards").innerHTML = cards
     .map(
@@ -84,12 +83,12 @@ function renderStats(data) {
     ? [
         `开始：${fmtDateTime(last.started_at)}`,
         `结果：${Number(last.success) === 1 ? "成功" : "失败"}`,
-        `抓取条数：${last.fetch_limit}，入库 ${last.inserted_count}，修订 ${last.revised_count}，跳过 ${last.skipped_count}`,
+        `同步条数：${last.fetch_limit}，入库 ${last.inserted_count}，修订 ${last.revised_count}，跳过 ${last.skipped_count}`,
         last.error ? `错误：${escapeHtml(last.error)}` : "",
       ]
         .filter(Boolean)
         .join("<br />")
-    : "还没有抓取记录。首次安装后可点击“补抓最近 50 条”建立初始知识库。";
+    : "还没有同步记录。首次安装后会先同步一次；也可以点“全量核对 50 条”立刻拉一遍。";
 
   const upcoming = data.upcoming_reminders || [];
   const noTargets =
@@ -140,29 +139,6 @@ function setupActions() {
   $("btn-fetch-1").addEventListener("click", () => runFetch(1));
   $("btn-fetch-10").addEventListener("click", () => runFetch(10));
   $("btn-fetch-50").addEventListener("click", () => runFetch(50));
-  $("btn-rebuild-fts").addEventListener("click", async () => {
-    const result = await callApi(
-      () => bridge.apiPost("rebuild/fts", {}),
-      $("action-result"),
-    );
-    if (result) {
-      showInfo($("action-result"), `全文索引已重建，共 ${result.chunks} 个分块。`);
-    }
-    loadStats();
-  });
-  $("btn-rebuild-emb").addEventListener("click", async () => {
-    const result = await callApi(
-      () => bridge.apiPost("rebuild/embeddings", {}),
-      $("action-result"),
-    );
-    if (result) {
-      showInfo(
-        $("action-result"),
-        `已清理 ${result.cleared} 条旧向量，重新生成 ${result.indexed} 条。`,
-      );
-    }
-    loadStats();
-  });
 }
 
 async function runFetch(limit) {
@@ -170,10 +146,10 @@ async function runFetch(limit) {
     () => bridge.apiPost("fetch", { limit }),
     $("action-result"),
   );
-  if (result) {
+  if (result && !result.error) {
     showInfo(
       $("action-result"),
-      `抓取完成：返回 ${result.returned} 条，入库 ${result.inserted} 条，修订 ${result.revised} 条，跳过 ${result.skipped} 条。`,
+      `同步完成：返回 ${result.returned} 条，入库 ${result.inserted} 条，修订 ${result.revised} 条，跳过 ${result.skipped} 条。`,
     );
   }
   loadStats();
@@ -188,6 +164,13 @@ async function loadAnnouncements() {
   );
   if (!data) return;
   state.announcements.total = data.total;
+
+  // Deleting the last row of the last page leaves the cursor past the end.
+  const totalPages = Math.max(1, Math.ceil((data.total || 0) / pageSize));
+  if (page > totalPages) {
+    state.announcements.page = totalPages;
+    return loadAnnouncements();
+  }
 
   const typeSelect = $("ann-type");
   if (typeSelect.options.length <= 1) {
@@ -212,7 +195,6 @@ async function loadAnnouncements() {
     )
     .join("");
 
-  const totalPages = Math.max(1, Math.ceil(data.total / pageSize));
   $("ann-page-info").textContent = `第 ${page} / ${totalPages} 页，共 ${data.total} 条`;
   $("ann-prev").disabled = page <= 1;
   $("ann-next").disabled = page >= totalPages;
@@ -254,6 +236,9 @@ function setupAnnouncements() {
 async function openDetail(id) {
   state.currentAnnouncementId = id;
   const data = await callApi(() => bridge.apiGet(`announcements/${id}`), null);
+  // Another row was opened while this request was in flight; rendering the
+  // late answer would leave the delete zone pointing at the wrong record.
+  if (state.currentAnnouncementId !== id) return;
   if (!data) return;
   const announcement = data.announcement;
 
@@ -264,26 +249,11 @@ async function openDetail(id) {
     `类型：${escapeHtml(announcement.type || "")}`,
     `日期：${escapeHtml(fmtDateTime(announcement.announcement_date))}`,
     `修订于源站：${escapeHtml(fmtDateTime(announcement.updated_at_source))}`,
-    `分块：${data.chunk_count}`,
     `链接：<a href="${escapeHtml(announcement.url)}" target="_blank" rel="noreferrer">${escapeHtml(announcement.url)}</a>`,
   ].join("　·　");
 
   $("detail-content").textContent = announcement.content_text || "（无正文）";
   $("detail-raw").textContent = JSON.stringify(announcement.raw_json, null, 2);
-
-  const chunks = data.chunks || [];
-  $("detail-chunk-count").textContent = chunks.length;
-  $("detail-chunks").innerHTML = chunks.length
-    ? chunks
-        .map(
-          (chunk) => `
-          <div class="chunk-item">
-            <div class="muted">分块 #${chunk.chunk_index + 1}${chunk.embedding_updated_at ? ` · 向量生成于 ${fmtDateTime(chunk.embedding_updated_at)}` : " · 无向量"}</div>
-            <pre class="content">${escapeHtml(chunk.content)}</pre>
-          </div>`,
-        )
-        .join("")
-    : '<div class="muted">没有分块。</div>';
 
   const revisions = data.revisions || [];
   $("detail-revisions").innerHTML = revisions.length
@@ -323,8 +293,7 @@ function setupDeleteZone() {
       () => bridge.apiPost(`announcements/${id}/delete`, { confirm: true }),
       $("del-result"),
     );
-    if (result) {
-      showInfo($("del-result"), "已彻底删除。该公告不会再被检索、问答或提醒。");
+    if (result && !result.error) {
       resetDeleteZone();
       $("ann-detail").hidden = true;
       loadAnnouncements();
@@ -370,10 +339,24 @@ function setupActivities() {
   $("activities-list").addEventListener("click", async (event) => {
     const delBtn = event.target.closest("[data-act-del]");
     if (!delBtn) return;
-    await callApi(
-      () => bridge.apiPost(`activities/${delBtn.dataset.actDel}/delete`, {}),
-      null,
-    );
+    const name = delBtn.closest(".item-head")?.querySelector(".name")?.textContent || "该活动";
+    if (!window.confirm(`删除「${name}」及其待发提醒？删掉后下一轮抽取不会把它写回来。`)) {
+      return;
+    }
+    $("act-result").hidden = true;
+    let result;
+    try {
+      result = await bridge.apiPost(`activities/${delBtn.dataset.actDel}/delete`, {});
+    } catch (error) {
+      showError($("act-result"), error);
+      return;
+    }
+    // A resolved-but-failed response must not read as success.
+    if (result && (result.error || result.detail)) {
+      showError($("act-result"), result);
+      return;
+    }
+    showInfo($("act-result"), `已删除「${name}」。`);
     loadActivities();
     loadStats();
   });
@@ -412,7 +395,7 @@ function escapeHtml(value) {
 
 async function main() {
   await bridge.ready();
-  document.title = bridge.t("pages.jx3-news.title", "剑网3新闻公告知识库");
+  document.title = bridge.t("pages.jx3-news.title", "剑网3活动提醒");
   setupTabs();
   setupActions();
   setupAnnouncements();

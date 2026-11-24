@@ -20,9 +20,10 @@ logger = logging.getLogger(__name__)
 CATCHUP_THRESHOLD = timedelta(hours=36)
 # Fetch and reminder logs older than this are pruned by the fetch job.
 LOG_RETENTION_DAYS = 7
-# Announcements are polled on this cadence, so a fresh one becomes searchable
-# within minutes instead of waiting for a fixed daily hour.
-DEFAULT_FETCH_INTERVAL_MINUTES = 15
+# Re-scheduling keeps slots that fell due within this window: the dispatch loop
+# runs once a minute, so a rebuild landing between due time and send must not
+# delete the reminder that is about to go out.
+RECENT_SLOT_GRACE = timedelta(minutes=10)
 
 # Activities ending on Monday/Thursday morning die with the weekly maintenance;
 # the last useful reminder is the previous evening.
@@ -66,7 +67,7 @@ def merge_reminder_texts(texts: list[str]) -> str:
             for body, link in zip(bodies, links, strict=True)
         ]
 
-    header = f"【今日到期提醒 · 共 {len(sections)} 项】"
+    header = f"【到期提醒 · 共 {len(sections)} 项】"
     return header + "\n\n" + "\n\n".join(sections)
 
 
@@ -148,12 +149,16 @@ def parse_session_address(value: str) -> tuple[str, str] | None:
     return scope, f"{platform}:{message_type}:{session_id}"
 
 
-def extract_session_id(value: str) -> str:
-    """Session id from a full address, or the value itself when it is a bare id."""
-    parts = str(value or "").strip().split(":", 2)
-    if len(parts) == 3 and parts[1].strip() in MESSAGE_TYPE_TO_SCOPE:
-        return parts[2].strip()
-    return str(value or "").strip()
+def parse_hhmm(value: str, default: tuple[int, int]) -> tuple[int, int]:
+    """Parse ``HH:MM``; junk input falls back to ``default``."""
+    try:
+        hour_text, minute_text = str(value).split(":", 1)
+        hour, minute = int(hour_text), int(minute_text)
+    except (ValueError, AttributeError):
+        return default
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        return default
+    return hour, minute
 
 
 class SchedulerService:
@@ -177,6 +182,18 @@ class SchedulerService:
 
     def now(self) -> datetime:
         return datetime.now(self.timezone)
+
+    def parse_moment(self, value: Any) -> datetime | None:
+        """Stored deadline as an aware datetime; a naive string takes the
+        plugin timezone so a row written without an offset cannot abort the
+        whole scheduling pass."""
+        try:
+            moment = datetime.fromisoformat(str(value))
+        except (TypeError, ValueError):
+            return None
+        if moment.tzinfo is None:
+            moment = moment.replace(tzinfo=self.timezone)
+        return moment
 
     def pick_fetch_limit(self) -> int:
         """Initial install and long downtime catch up with a large fetch."""
@@ -204,7 +221,6 @@ class SchedulerService:
     async def fetch_and_ingest(
         self,
         client: NewsClient,
-        embedding_provider: Any | None = None,
         limit: int | None = None,
     ) -> dict[str, Any]:
         """Fetch once, ingest, and write a fetch log entry."""
@@ -215,7 +231,7 @@ class SchedulerService:
         returned = inserted = revised = skipped = 0
         try:
             items = await client.fetch(chosen)
-            result = await self.ingest.ingest_items(items, embedding_provider)
+            result = await self.ingest.ingest_items(items)
             returned = int(result.get("returned", 0))
             inserted = int(result.get("inserted", 0))
             revised = int(result.get("revised", 0))
@@ -270,14 +286,7 @@ class SchedulerService:
             )
 
     def _parse_send_time(self, send_time: str) -> tuple[int, int]:
-        try:
-            hour_text, minute_text = send_time.split(":", 1)
-            hour, minute = int(hour_text), int(minute_text)
-        except (ValueError, AttributeError):
-            return 10, 0
-        if not (0 <= hour <= 23 and 0 <= minute <= 59):
-            return 10, 0
-        return hour, minute
+        return parse_hhmm(send_time, (10, 0))
 
     def _slots_for(
         self, deadline: datetime, targets: ReminderTargets, now: datetime
@@ -369,9 +378,8 @@ class SchedulerService:
             deadline_text = row["item_expiry"] or row["end_time"]
             if not deadline_text:
                 continue
-            try:
-                deadline = datetime.fromisoformat(deadline_text)
-            except ValueError:
+            deadline = self.parse_moment(deadline_text)
+            if deadline is None:
                 continue
             for moment, kind, _ in self._slots_for(deadline, targets, now):
                 keys[(row["id"], moment.isoformat(timespec="seconds"))] = kind
@@ -427,32 +435,45 @@ class SchedulerService:
 
         with self.db.connect() as conn:
             rows = conn.execute(query, params).fetchall()
-            # Re-scheduling replaces ALL pending slots (not just future ones):
-            # a config change takes effect immediately and a missed slot is
-            # never re-dispatched.
+            # Re-scheduling replaces pending slots so a config change takes
+            # effect immediately; slots already due are kept (see
+            # RECENT_SLOT_GRACE) because their dispatch may be in flight.
+            cutoff = (now - RECENT_SLOT_GRACE).isoformat(timespec="seconds")
             if announcement_ids:
                 marks = ",".join("?" for _ in announcement_ids)
                 conn.execute(
                     f"""
                     DELETE FROM reminders
                     WHERE status = 'pending'
+                      AND scheduled_at > ?
                       AND activity_id IN (
                           SELECT id FROM activities
                           WHERE announcement_id IN ({marks})
                       )
                     """,
-                    list(announcement_ids),
+                    [cutoff, *announcement_ids],
                 )
             else:
-                conn.execute("DELETE FROM reminders WHERE status = 'pending'")
+                conn.execute(
+                    "DELETE FROM reminders WHERE status = 'pending' AND scheduled_at > ?",
+                    (cutoff,),
+                )
+            # Slots that came due while the plugin was down are expired, not
+            # sent hours later: the rule is "no catch-up".
+            conn.execute(
+                """
+                UPDATE reminders SET status = 'cancelled'
+                WHERE status = 'pending' AND scheduled_at <= ?
+                """,
+                (cutoff,),
+            )
             created = 0
             for row in rows:
                 deadline_text = row["item_expiry"] or row["end_time"]
                 if not deadline_text:
                     continue
-                try:
-                    deadline = datetime.fromisoformat(deadline_text)
-                except ValueError:
+                deadline = self.parse_moment(deadline_text)
+                if deadline is None:
                     continue
                 is_item = bool(row["item_expiry"])
                 for moment, kind, days in self._slots_for(deadline, targets, now):
@@ -495,66 +516,54 @@ class SchedulerService:
     def mark_reminder(
         self, reminder_id: int, status: str, error: str = ""
     ) -> None:
-        with self.db.connect() as conn:
-            conn.execute(
-                """
-                UPDATE reminders
-                SET status = ?, error = ?, sent_at = datetime('now', 'localtime')
-                WHERE id = ?
-                """,
-                (status, error[:500], reminder_id),
-            )
-            if status in ("sent", "failed", "cancelled"):
-                conn.execute(
-                    """
-                    INSERT INTO reminder_logs(
-                        reminder_id, activity_name, target_type, target_id,
-                        scheduled_at, success, error
-                    )
-                    SELECT r.id, a.name, r.target_type, r.target_id,
-                           r.scheduled_at, ?, ?
-                    FROM reminders r
-                    JOIN activities a ON a.id = r.activity_id
-                    WHERE r.id = ?
-                    """,
-                    (1 if status == "sent" else 0, error[:500], reminder_id),
-                )
+        """Record a dispatch outcome.
 
-    def cancel_reminders_for_announcement(self, announcement_id: int) -> int:
+        Only a ``pending`` row may leave that state: a rebuild running while a
+        send is in flight may already have cancelled the slot, and reviving it
+        would report a send that the rules say must be dropped. A failure keeps
+        the row pending so the next scan retries it inside the grace window.
+        """
         with self.db.connect() as conn:
+            if status == "pending":
+                conn.execute(
+                    "UPDATE reminders SET error = ? WHERE id = ? AND status = 'pending'",
+                    (error[:500], reminder_id),
+                )
+                return
             cursor = conn.execute(
                 """
-                UPDATE reminders SET status = 'cancelled'
-                WHERE status = 'pending' AND activity_id IN (
-                    SELECT id FROM activities WHERE announcement_id = ?
-                )
+                UPDATE reminders
+                SET status = ?, error = ?, sent_at = ?
+                WHERE id = ? AND status = 'pending'
                 """,
-                (announcement_id,),
+                (
+                    status,
+                    error[:500],
+                    self.now().isoformat(timespec="seconds"),
+                    reminder_id,
+                ),
             )
-            return int(cursor.rowcount)
-
-    def next_run_at(self, interval_minutes: int) -> str:
-        """Next poll wall-clock time, for status display."""
-        try:
-            minutes = max(1, int(interval_minutes))
-        except (TypeError, ValueError):
-            minutes = DEFAULT_FETCH_INTERVAL_MINUTES
-        with self.db.connect() as conn:
-            row = conn.execute("SELECT MAX(started_at) FROM fetch_logs").fetchone()
-        last = row[0] if row else None
-        moment: datetime | None = None
-        if last:
-            try:
-                moment = datetime.fromisoformat(str(last))
-            except ValueError:
-                moment = None
-        if moment is None:
-            return self.now().isoformat(timespec="seconds")
-        if moment.tzinfo is None:
-            moment = moment.replace(tzinfo=self.timezone)
-        else:
-            moment = moment.astimezone(self.timezone)
-        return (moment + timedelta(minutes=minutes)).isoformat(timespec="seconds")
+            if int(cursor.rowcount) == 0:
+                return
+            conn.execute(
+                """
+                INSERT INTO reminder_logs(
+                    reminder_id, activity_name, target_type, target_id,
+                    scheduled_at, sent_at, success, error
+                )
+                SELECT r.id, a.name, r.target_type, r.target_id,
+                       r.scheduled_at, ?, ?, ?
+                FROM reminders r
+                JOIN activities a ON a.id = r.activity_id
+                WHERE r.id = ?
+                """,
+                (
+                    self.now().isoformat(timespec="seconds"),
+                    1 if status == "sent" else 0,
+                    error[:500],
+                    reminder_id,
+                ),
+            )
 
     def prune_logs(self, retention_days: int = LOG_RETENTION_DAYS) -> dict[str, int]:
         """Drop fetch/reminder logs older than the retention window."""
@@ -574,7 +583,8 @@ class SchedulerService:
             )
         return {"fetch_logs": fetch, "reminder_logs": reminder}
 
-    def status_snapshot(self, interval_minutes: int) -> dict[str, Any]:
+    def status_snapshot(self, next_fetch_at: str) -> dict[str, Any]:
+        """Status payload; the caller owns the schedule, so it passes the next run."""
         with self.db.connect() as conn:
             last = conn.execute(
                 """
@@ -585,21 +595,19 @@ class SchedulerService:
                 """
             ).fetchone()
         return {
-            "next_fetch_at": self.next_run_at(interval_minutes),
+            "next_fetch_at": next_fetch_at,
             "last_fetch": dict(last) if last else None,
         }
 
 
 __all__ = [
     "CATCHUP_THRESHOLD",
-    "DEFAULT_FETCH_INTERVAL_MINUTES",
     "LOG_RETENTION_DAYS",
     "MAINTENANCE_DEADLINE_BEFORE",
     "MAINTENANCE_WEEKDAYS",
     "MESSAGE_TYPE_TO_SCOPE",
     "ReminderTargets",
     "SchedulerService",
-    "extract_session_id",
     "merge_reminder_texts",
     "parse_session_address",
 ]

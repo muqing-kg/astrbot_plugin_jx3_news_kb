@@ -1,51 +1,118 @@
-from core.database import Database
+import sqlite3
+
+from core.database import SCHEMA_VERSION, Database
 
 
-def test_initialize_creates_tables_and_rebuilds_fts(tmp_path):
+def _tables(db: Database) -> set[str]:
+    with db.connect() as conn:
+        rows = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'"
+        ).fetchall()
+    return {row["name"] for row in rows}
+
+
+def test_initialize_creates_core_tables(tmp_path):
     db = Database(tmp_path / "plugin.db")
     db.initialize()
+
+    tables = _tables(db)
+    assert {
+        "announcements",
+        "announcement_revisions",
+        "activities",
+        "reminders",
+        "reminder_logs",
+        "deleted_fingerprints",
+        "fetch_logs",
+    } <= tables
+    assert "chunks" not in tables
+    assert "chunks_fts" not in tables
+
+    with db.connect() as conn:
+        version = conn.execute(
+            "SELECT value FROM schema_meta WHERE key = 'version'"
+        ).fetchone()["value"]
+    assert int(version) == SCHEMA_VERSION
+
+
+def test_initialize_drops_legacy_chunk_tables(tmp_path):
+    path = tmp_path / "legacy.db"
+    conn = sqlite3.connect(path)
+    conn.executescript(
+        """
+        CREATE TABLE schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+        INSERT INTO schema_meta(key, value) VALUES ('version', '1');
+        CREATE TABLE chunks (id INTEGER PRIMARY KEY, content TEXT);
+        CREATE TABLE chunks_fts (content TEXT);
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    db = Database(path)
+    db.initialize()
+
+    tables = _tables(db)
+    assert "chunks" not in tables
+    assert "chunks_fts" not in tables
 
     with db.connect() as conn:
         conn.execute(
             """
             INSERT INTO announcements(
-                source_id, catid, title, type, url, description, content_text,
-                raw_json, content_hash, published_at, updated_at_source
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                "1", "24581", "测试公告", "官方公告", "https://example.com/1",
-                "摘要", "正文", "{}", "hash-1", "2026-09-11T00:00:00+08:00",
-                "2026-09-11T00:00:00+08:00",
-            ),
-        )
-        announcement_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
-        conn.execute(
+                source_id, title, type, url, content_hash, published_at,
+                updated_at_source
+            ) VALUES ('1', '公告', '官方公告', 'https://example.com/1',
+                      'hash-1', '2026-09-11T00:00:00+08:00',
+                      '2026-09-11T00:00:00+08:00')
             """
-            INSERT INTO announcement_revisions(
-                announcement_id, revision_no, title, content_text, raw_json,
-                content_hash, updated_at_source
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            (announcement_id, 1, "测试公告", "正文", "{}", "hash-1", "2026-09-11"),
-        )
-        revision_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
-        conn.execute(
-            """
-            INSERT INTO chunks(
-                announcement_id, revision_id, chunk_index, title,
-                announcement_date, announcement_type, url, content
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (announcement_id, revision_id, 0, "测试公告", "2026-09-11", "官方公告",
-             "https://example.com/1", "正文内容"),
         )
 
-    assert db.fts_rebuild() == 1
+    # Re-initialising on an already-migrated database keeps the new data.
+    db.initialize()
+    assert db.count("announcements") == 1
+
+
+def test_initialize_adds_extract_mode_to_v2_database(tmp_path):
+    path = tmp_path / "v2.db"
+    conn = sqlite3.connect(path)
+    conn.executescript(
+        """
+        CREATE TABLE schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+        INSERT INTO schema_meta(key, value) VALUES ('version', '2');
+        CREATE TABLE announcements (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_id TEXT NOT NULL,
+            catid TEXT NOT NULL DEFAULT '',
+            title TEXT NOT NULL,
+            type TEXT NOT NULL DEFAULT '',
+            url TEXT NOT NULL UNIQUE,
+            description TEXT NOT NULL DEFAULT '',
+            content_text TEXT NOT NULL DEFAULT '',
+            raw_json TEXT NOT NULL DEFAULT '{}',
+            content_hash TEXT NOT NULL,
+            published_at TEXT NOT NULL,
+            updated_at_source TEXT NOT NULL,
+            activity_extracted_at TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
+            modified_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
+        );
+        INSERT INTO announcements(
+            source_id, title, url, content_hash, published_at, updated_at_source
+        ) VALUES ('1', '老公告', 'https://example.com/old', 'h',
+                  '2026-09-11T00:00:00+08:00', '2026-09-11T00:00:00+08:00');
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    db = Database(path)
+    db.initialize()
+
     with db.connect() as conn:
-        hit = conn.execute(
-            "SELECT chunk_id FROM chunks_fts WHERE chunks_fts MATCH ?",
-            ('"正文内容"',),
-        ).fetchone()
-    assert hit is not None
-    assert hit[0] == 1
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(announcements)")}
+        mode = conn.execute(
+            "SELECT activity_extract_mode FROM announcements"
+        ).fetchone()[0]
+    assert "activity_extract_mode" in columns
+    assert mode == ""
