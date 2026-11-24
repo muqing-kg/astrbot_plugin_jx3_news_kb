@@ -357,7 +357,7 @@ class ActivityService:
         for row in rows:
             activities = await self._extract_one(provider, row)
             # None means the LLM was unavailable or unusable: fall back to the
-            # pattern, and never treat that as "this announcement has nothing".
+            # pattern.
             authoritative = activities is not None
             mode = "llm"
             if activities is None:
@@ -370,10 +370,11 @@ class ActivityService:
                     str(row["announcement_date"] or ""), self.timezone_name,
                 )
             if not activities and not authoritative:
+                # The model was unavailable and the pattern found nothing: record
+                # the attempt so the announcement counts as read and gets pruned.
                 logger.debug(
-                    "公告 %s 无可用抽取结果（模式=%s），保留既有活动", row["id"], mode
+                    "公告 %s 未识别出活动（模式=%s），按已抽取处理", row["id"], mode
                 )
-                continue
             created += self._store(row, activities, mode, authoritative)
         return created
 

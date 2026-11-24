@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 CATCHUP_THRESHOLD = timedelta(hours=36)
 # Fetch and reminder logs older than this are pruned by the fetch job.
 LOG_RETENTION_DAYS = 7
+FINGERPRINT_RETENTION_DAYS = 60
 # Re-scheduling keeps slots that fell due within this window: the dispatch loop
 # runs once a minute, so a rebuild landing between due time and send must not
 # delete the reminder that is about to go out.
@@ -530,7 +531,7 @@ class SchedulerService:
                     (error[:500], reminder_id),
                 )
                 return
-            cursor = conn.execute(
+            conn.execute(
                 """
                 UPDATE reminders
                 SET status = ?, error = ?, sent_at = ?
@@ -543,45 +544,55 @@ class SchedulerService:
                     reminder_id,
                 ),
             )
-            if int(cursor.rowcount) == 0:
-                return
-            conn.execute(
-                """
-                INSERT INTO reminder_logs(
-                    reminder_id, activity_name, target_type, target_id,
-                    scheduled_at, sent_at, success, error
-                )
-                SELECT r.id, a.name, r.target_type, r.target_id,
-                       r.scheduled_at, ?, ?, ?
-                FROM reminders r
-                JOIN activities a ON a.id = r.activity_id
-                WHERE r.id = ?
-                """,
-                (
-                    self.now().isoformat(timespec="seconds"),
-                    1 if status == "sent" else 0,
-                    error[:500],
-                    reminder_id,
-                ),
-            )
 
-    def prune_logs(self, retention_days: int = LOG_RETENTION_DAYS) -> dict[str, int]:
-        """Drop fetch/reminder logs older than the retention window."""
+    def prune_logs(self, retention_days: int = LOG_RETENTION_DAYS) -> int:
+        """Drop fetch logs older than the retention window."""
         cutoff = (self.now() - timedelta(days=retention_days)).isoformat(
             timespec="seconds"
         )
         with self.db.connect() as conn:
-            fetch = int(
+            return int(
                 conn.execute(
                     "DELETE FROM fetch_logs WHERE started_at < ?", (cutoff,)
                 ).rowcount
             )
-            reminder = int(
+
+    def prune_announcements(self, targets: ReminderTargets) -> dict[str, int]:
+        """Drop announcements that are extracted and have nothing left to send.
+
+        An announcement is spent once extraction is done and no reminder of it is
+        still pending; with no destination configured nothing may be sent, so the
+        caller's targets double as the guard against wiping the whole table.
+        """
+        if not targets.as_pairs():
+            return {"announcements": 0, "fingerprints": 0}
+        with self.db.connect() as conn:
+            ids = [
+                int(row["id"])
+                for row in conn.execute(
+                    """
+                    SELECT an.id FROM announcements AS an
+                    WHERE an.activity_extracted_at IS NOT NULL
+                      AND an.activity_extracted_at <> ''
+                      AND NOT EXISTS (
+                          SELECT 1 FROM activities AS a
+                          JOIN reminders AS r ON r.activity_id = a.id
+                          WHERE a.announcement_id = an.id AND r.status = 'pending'
+                      )
+                    """
+                ).fetchall()
+            ]
+        deleted = sum(1 for i in ids if self.ingest.hard_delete_announcement(i))
+
+        stale = (self.now() - timedelta(days=FINGERPRINT_RETENTION_DAYS)).date().isoformat()
+        with self.db.connect() as conn:
+            fingerprints = int(
                 conn.execute(
-                    "DELETE FROM reminder_logs WHERE sent_at < ?", (cutoff,)
+                    "DELETE FROM deleted_fingerprints WHERE date(deleted_at) < ?",
+                    (stale,),
                 ).rowcount
             )
-        return {"fetch_logs": fetch, "reminder_logs": reminder}
+        return {"announcements": deleted, "fingerprints": fingerprints}
 
     def status_snapshot(self, next_fetch_at: str) -> dict[str, Any]:
         """Status payload; the caller owns the schedule, so it passes the next run."""
@@ -602,6 +613,7 @@ class SchedulerService:
 
 __all__ = [
     "CATCHUP_THRESHOLD",
+    "FINGERPRINT_RETENTION_DAYS",
     "LOG_RETENTION_DAYS",
     "MAINTENANCE_DEADLINE_BEFORE",
     "MAINTENANCE_WEEKDAYS",

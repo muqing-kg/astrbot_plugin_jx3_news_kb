@@ -21,12 +21,12 @@ def test_initialize_creates_core_tables(tmp_path):
         "announcement_revisions",
         "activities",
         "reminders",
-        "reminder_logs",
         "deleted_fingerprints",
         "fetch_logs",
     } <= tables
     assert "chunks" not in tables
     assert "chunks_fts" not in tables
+    assert "reminder_logs" not in tables
 
     with db.connect() as conn:
         version = conn.execute(
@@ -116,3 +116,15 @@ def test_initialize_adds_extract_mode_to_v2_database(tmp_path):
         ).fetchone()[0]
     assert "activity_extract_mode" in columns
     assert mode == ""
+
+def test_initialize_drops_the_unused_reminder_log_table(tmp_path):
+    path = tmp_path / "legacy.db"
+    conn = sqlite3.connect(path)
+    conn.executescript("CREATE TABLE reminder_logs (id INTEGER PRIMARY KEY);")
+    conn.commit()
+    conn.close()
+
+    db = Database(path)
+    db.initialize()
+
+    assert "reminder_logs" not in _tables(db)

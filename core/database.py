@@ -89,18 +89,6 @@ CREATE TABLE IF NOT EXISTS reminders (
 
 CREATE INDEX IF NOT EXISTS idx_reminders_pending ON reminders(status, scheduled_at);
 
-CREATE TABLE IF NOT EXISTS reminder_logs (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    reminder_id INTEGER NOT NULL REFERENCES reminders(id) ON DELETE CASCADE,
-    activity_name TEXT NOT NULL,
-    target_type TEXT NOT NULL,
-    target_id TEXT NOT NULL,
-    scheduled_at TEXT NOT NULL,
-    sent_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
-    success INTEGER NOT NULL,
-    error TEXT NOT NULL DEFAULT ''
-);
-
 CREATE TABLE IF NOT EXISTS deleted_fingerprints (
     fingerprint TEXT PRIMARY KEY,
     url TEXT NOT NULL,
@@ -148,6 +136,8 @@ class Database:
     def initialize(self) -> None:
         with self.connect() as conn:
             conn.executescript(SCHEMA)
+            # Written by older builds, never read back; drop whatever is left.
+            conn.execute("DROP TABLE IF EXISTS reminder_logs")
             stored = conn.execute(
                 "SELECT value FROM schema_meta WHERE key = 'version'"
             ).fetchone()

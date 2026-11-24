@@ -59,7 +59,6 @@
     "default": 50,
     "hint": "每日全量核对时拉取的公告条数，也是该轮的补正文上限。"
   },
-
   "socket_enabled": {
     "description": "启用实时公告推送",
     "type": "bool",

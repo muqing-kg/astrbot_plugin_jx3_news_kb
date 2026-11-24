@@ -537,21 +537,7 @@ def test_merge_dedupes_same_source_link():
 
 def test_prune_logs_keeps_recent_only(tmp_path):
     scheduler = _make_scheduler(tmp_path)
-    announcement_id = _insert_announcement(scheduler.db)
-    activity_id = _insert_activity(
-        scheduler.db, announcement_id, end_time="2099-09-17T07:00:00+08:00"
-    )
     with scheduler.db.connect() as conn:
-        cursor = conn.execute(
-            """
-            INSERT INTO reminders(
-                activity_id, target_type, target_id, scheduled_at, message_text
-            ) VALUES (?, 'group', 'fake:GroupMessage:10001',
-                      '2026-01-01T10:00:00+08:00', 'text')
-            """,
-            (activity_id,),
-        )
-        reminder_id = cursor.lastrowid
         conn.execute(
             """
             INSERT INTO fetch_logs(started_at, finished_at, success, fetch_limit)
@@ -565,23 +551,11 @@ def test_prune_logs_keeps_recent_only(tmp_path):
             VALUES (datetime('now', 'localtime'), datetime('now', 'localtime'), 1, 10)
             """
         )
-        conn.execute(
-            """
-            INSERT INTO reminder_logs(
-                reminder_id, activity_name, target_type, target_id,
-                scheduled_at, sent_at, success
-            ) VALUES (?, 'a', 'group', '1', '2026-01-01',
-                      datetime('now', 'localtime', '-10 days'), 1)
-            """,
-            (reminder_id,),
-        )
 
-    pruned = scheduler.prune_logs()
-    assert pruned == {"fetch_logs": 1, "reminder_logs": 1}
+    assert scheduler.prune_logs() == 1
 
     with scheduler.db.connect() as conn:
         assert conn.execute("SELECT COUNT(*) FROM fetch_logs").fetchone()[0] == 1
-        assert conn.execute("SELECT COUNT(*) FROM reminder_logs").fetchone()[0] == 0
 
 
 def test_due_reminders_and_mark(tmp_path):
@@ -620,9 +594,7 @@ def test_due_reminders_and_mark(tmp_path):
                 "SELECT status FROM reminders ORDER BY id"
             ).fetchall()
         ]
-        logs = conn.execute("SELECT success, error FROM reminder_logs").fetchall()
     assert sorted(statuses) == sorted(["sent", "failed", "pending", "pending"])
-    assert sorted(int(row["success"]) for row in logs) == [0, 1]
     # The two untouched rows are still due.
     assert len(scheduler.due_reminders()) == 2
 
@@ -661,4 +633,68 @@ def test_create_pending_survives_a_date_only_end_time(tmp_path):
 
     with scheduler.db.connect() as conn:
         assert conn.execute("SELECT COUNT(*) FROM reminders").fetchone()[0] >= 1
+
+
+
+def test_prune_announcements_drops_anything_with_nothing_left_to_send(tmp_path):
+    scheduler = _make_scheduler(tmp_path)
+    now = scheduler.now()
+
+    def stamp(days: int) -> str:
+        return (now - timedelta(days=days)).isoformat(timespec="seconds")
+
+    spent = _insert_announcement(scheduler.db, published=stamp(20))
+    _insert_activity(scheduler.db, spent, end_time=stamp(10))
+    spent_without_activity = _insert_announcement(scheduler.db, published=stamp(2))
+    still_pending = _insert_announcement(scheduler.db, published=stamp(23))
+    activity_id = _insert_activity(scheduler.db, still_pending, end_time=stamp(9))
+    never_extracted = _insert_announcement(scheduler.db, published=stamp(24))
+
+    with scheduler.db.connect() as conn:
+        conn.execute(
+            "UPDATE announcements SET activity_extracted_at = ? WHERE id IN (?, ?, ?)",
+            (stamp(1), spent, spent_without_activity, still_pending),
+        )
+        conn.execute(
+            "INSERT INTO reminders(activity_id, target_type, target_id, "
+            "scheduled_at, message_text, status) VALUES (?, ?, ?, ?, ?, 'pending')",
+            (activity_id, "group", "aiocqhttp:GroupMessage:1", stamp(0), "提醒"),
+        )
+        conn.execute(
+            "INSERT INTO deleted_fingerprints(fingerprint, url, title, deleted_at) "
+            "VALUES (?, ?, ?, ?)",
+            ("old-hash", "https://example.com/old", "旧公告", stamp(90)),
+        )
+        conn.execute(
+            "INSERT INTO deleted_fingerprints(fingerprint, url, title) "
+            "VALUES (?, ?, ?)",
+            ("new-hash", "https://example.com/new", "新公告"),
+        )
+
+    assert scheduler.prune_announcements(TARGETS) == {
+        "announcements": 2,
+        "fingerprints": 1,
+    }
+
+    with scheduler.db.connect() as conn:
+        left = {int(r[0]) for r in conn.execute("SELECT id FROM announcements")}
+    assert left == {still_pending, never_extracted}
+
+
+def test_prune_announcements_does_nothing_without_a_destination(tmp_path):
+    scheduler = _make_scheduler(tmp_path)
+    spent = _insert_announcement(scheduler.db)
+    _insert_activity(scheduler.db, spent)
+    with scheduler.db.connect() as conn:
+        conn.execute(
+            "UPDATE announcements SET activity_extracted_at = ? WHERE id = ?",
+            ("2026-09-14T10:00:00+08:00", spent),
+        )
+
+    assert scheduler.prune_announcements(ReminderTargets(sessions=[])) == {
+        "announcements": 0,
+        "fingerprints": 0,
+    }
+    with scheduler.db.connect() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM announcements").fetchone()[0] == 1
 

@@ -407,8 +407,8 @@ async def test_regex_reads_window_without_times(db):
 
 
 @pytest.mark.asyncio()
-async def test_regex_miss_leaves_announcement_for_retry(db):
-    """A pattern miss must not clear activities nor stamp the row as read."""
+async def test_regex_miss_marks_the_announcement_as_read(db):
+    """No model and no pattern hit: the attempt is recorded so it can be pruned."""
     announcement_id = _insert_announcement(db, content="本公告没有任何日期区间。")
     with db.connect() as conn:
         conn.execute(
@@ -421,12 +421,14 @@ async def test_regex_miss_leaves_announcement_for_retry(db):
     assert await service.extract_for_announcements(None, [announcement_id]) == 0
 
     with db.connect() as conn:
-        assert conn.execute("SELECT COUNT(*) FROM activities").fetchone()[0] == 1
-        stamped = conn.execute(
-            "SELECT activity_extracted_at FROM announcements WHERE id = ?",
+        assert conn.execute("SELECT COUNT(*) FROM activities").fetchone()[0] == 0
+        stamped, mode = conn.execute(
+            "SELECT activity_extracted_at, activity_extract_mode"
+            " FROM announcements WHERE id = ?",
             (announcement_id,),
-        ).fetchone()[0]
-    assert stamped is None
+        ).fetchone()
+    assert stamped
+    assert mode == "regex"
 
 
 def test_regex_treats_maintenance_words_as_seven_am():

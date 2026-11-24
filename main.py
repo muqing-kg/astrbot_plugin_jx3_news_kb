@@ -185,11 +185,23 @@ class JX3NewsKBPlugin(Star):
             self.scheduler.create_pending_reminders(targets, announcement_ids)
         return created
 
+    def _reminder_targets(self) -> ReminderTargets:
+        """Destinations actually in use; empty also blocks announcement pruning."""
+        if not bool(self.config.get("reminder_enabled", True)):
+            return ReminderTargets(sessions=[])
+        return ReminderTargets.from_config(self.config)
+
+    def _prune_spent(self) -> None:
+        removed = self.scheduler.prune_announcements(self._reminder_targets())
+        if removed["announcements"]:
+            logger.info("清理已无待发提醒的公告 %d 条", removed["announcements"])
+
     async def fetch_job(self, limit: int | None = None) -> dict[str, Any]:
         result = await self.fetch_and_ingest(limit)
         self.scheduler.prune_logs()
         if result.get("success"):
             await self.extract_and_schedule()
+        self._prune_spent()
         return result
 
     async def run_sync(self, limit: int | None = None) -> dict[str, Any]:
@@ -238,6 +250,8 @@ class JX3NewsKBPlugin(Star):
                 sent += len(items)
             else:
                 logger.warning("提醒发送失败（%s）：%s", target_id, error)
+        if groups:
+            self._prune_spent()
         return sent
 
     # ---------- background loops ----------

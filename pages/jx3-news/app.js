@@ -62,8 +62,8 @@ function renderStats(data) {
   const counts = data.counts || {};
   const syncMinutes = data.sync_interval_minutes ?? 60;
   const cards = [
-    ["公告总数", counts.announcements],
-    ["活动抽取", counts.activities],
+    ["在库公告", counts.announcements],
+    ["在库活动", counts.activities],
     ["待发提醒（条）", data.pending_reminders],
     ["提醒目标", data.reminder_targets ?? 0],
     ["后台任务", data.scheduler_alive ? "运行中" : "未运行"],
