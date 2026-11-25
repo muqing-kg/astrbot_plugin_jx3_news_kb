@@ -90,7 +90,7 @@ async def handle_stats(plugin: Any, query: dict[str, Any], payload: dict[str, An
         "reminder_targets": int(plugin.reminder_target_count()),
         "scheduler_alive": bool(plugin.background_alive()),
         "socket_enabled": bool(plugin.config.get("socket_enabled", True)),
-        "sync_interval_minutes": int(plugin.config.get("sync_interval_minutes", 60)),
+        "sync_interval_minutes": int(plugin.config.get("sync_interval_minutes", 360)),
         "daily_full_pull_time": str(plugin.config.get("daily_full_pull_time") or "03:00"),
     }
 
@@ -219,18 +219,18 @@ async def handle_activities(
                    a.item_expiry, a.item_name, a.explanation, a.confidence,
                    an.title AS announcement_title, an.url,
                    date(an.published_at) AS announcement_date,
-                   (SELECT COUNT(DISTINCT r.activity_id) FROM reminders r
-                    JOIN activities v ON v.id = r.activity_id
-                    WHERE v.announcement_id = a.announcement_id
-                      AND r.status = 'pending')
-                       AS pending_reminders
+                   (SELECT GROUP_CONCAT(DISTINCT substr(r.scheduled_at, 6, 11))
+                    FROM reminders r
+                    WHERE r.activity_id = a.id AND r.status = 'pending'
+                      AND r.scheduled_at > ?)
+                       AS reminder_times
             FROM activities a
             JOIN announcements an ON an.id = a.announcement_id
             WHERE COALESCE(NULLIF(a.item_expiry, ''), NULLIF(a.end_time, '')) > ?
             ORDER BY COALESCE(NULLIF(a.item_expiry, ''), NULLIF(a.end_time, ''))
             LIMIT 200
             """,
-            (now_iso,),
+            (now_iso, now_iso),
         ).fetchall()
     return {"items": [dict(row) for row in rows]}
 

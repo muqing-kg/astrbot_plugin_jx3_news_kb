@@ -26,8 +26,8 @@
   "sync_interval_minutes": {
     "description": "定时同步间隔（分钟）",
     "type": "int",
-    "default": 60,
-    "hint": "每隔多少分钟拉一次最新公告。实时推送正常时，这一轮主要用来补公告正文。"
+    "default": 360,
+    "hint": "推送正常时公告已经实时入库，这一轮只用来兜底：补断线期间漏掉的公告与缺正文的记录。默认 6 小时，每天 03:00 另有一次全量核对。"
   },
   "initial_fetch_limit": {
     "description": "首次安装抓取条数",

@@ -235,7 +235,7 @@ def test_activities_lists_only_ongoing(plugin):
     assert data["items"][0]["announcement_title"] == "版本更新公告"
 
 
-def test_activities_count_activities_not_targets(plugin):
+def test_activities_list_the_moments_a_reminder_will_fire(plugin):
     _insert_future_activity(plugin, name="只剩一个活动")
     plugin.scheduler.create_pending_reminders(
         ReminderTargets(sessions=[FULL_GROUP_SESSION, "fake:FriendMessage:20002"])
@@ -243,8 +243,10 @@ def test_activities_count_activities_not_targets(plugin):
     assert plugin.db.count("reminders") == 4
 
     data = asyncio.run(routes.handle_activities(plugin, {}, {}))
-    # One activity, two targets: the badge counts the activity once.
-    assert data["items"][0]["pending_reminders"] == 1
+    times = data["items"][0]["reminder_times"].split(",")
+    # Two targets, one activity: the moment is listed once, not per target.
+    assert len(times) == 2
+    assert times == sorted(set(times))
 
 
 def test_activity_delete_removes_reminders_without_confirmation(plugin):

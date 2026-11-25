@@ -55,7 +55,7 @@ except Exception:  # noqa: BLE001 - logging must never stop the plugin loading
 
 PLUGIN_NAME = "astrbot_plugin_jx3_news_kb"
 REMINDER_LOOP_INTERVAL = 60
-DEFAULT_SYNC_INTERVAL_MINUTES = 60
+DEFAULT_SYNC_INTERVAL_MINUTES = 360
 DEFAULT_DAILY_PULL_TIME = "03:00"
 DEFAULT_DAILY_PULL_LIMIT = 50
 
