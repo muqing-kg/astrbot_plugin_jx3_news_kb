@@ -60,7 +60,6 @@ function setupTabs() {
 /* ---------- overview ---------- */
 function renderStats(data) {
   const counts = data.counts || {};
-  const syncMinutes = data.sync_interval_minutes ?? 360;
   const cards = [
     ["在库公告", counts.announcements],
     ["在库活动", counts.activities],
@@ -68,7 +67,6 @@ function renderStats(data) {
     ["提醒目标", data.reminder_targets ?? 0],
     ["后台任务", data.scheduler_alive ? "运行中" : "未运行"],
     ["推送通道", data.socket_enabled ? "已启用" : "未启用"],
-    ["同步间隔", `${syncMinutes} 分钟`],
     ["每日全量核对", data.daily_full_pull_time || "03:00"],
   ];
   $("stat-cards").innerHTML = cards
@@ -302,11 +300,12 @@ function setupDeleteZone() {
   });
 }
 
-/* ---------- ongoing activities (reminder tab) ---------- */
+/* ---------- ongoing activities (summary tab) ---------- */
 async function loadActivities() {
   const data = await callApi(() => bridge.apiGet("activities"), null);
   if (!data) return;
   const items = data.items || [];
+  $("act-total").textContent = `共 ${data.total ?? items.length} 条活动`;
   $("activities-list").innerHTML = items.length
     ? items
         .map((item) => {
@@ -314,16 +313,11 @@ async function loadActivities() {
           if (item.start_time) times.push(`开始：<span class="hl">${fmtDateTime(item.start_time)}</span>`);
           if (item.end_time) times.push(`截止：<span class="hl">${fmtDateTime(item.end_time)}</span>`);
           if (item.item_expiry) times.push(`券/道具消失：<span class="hl">${fmtDateTime(item.item_expiry)}</span>`);
-          const reminderTimes = (item.reminder_times || "")
-            .split(",")
-            .filter(Boolean)
-            .sort();
           return `
           <div class="reminder-item">
             <div class="item-head">
               <span class="name">${escapeHtml(item.name)}</span>
               <span class="tag">${escapeHtml(item.category)}</span>
-              ${reminderTimes.length ? `<span class="tag status-pending">提醒 ${reminderTimes.map((t) => escapeHtml(t.replace("T", " "))).join("、")}</span>` : ""}
               <button class="danger-btn" data-act-del="${item.id}">删除</button>
             </div>
             <div class="muted">

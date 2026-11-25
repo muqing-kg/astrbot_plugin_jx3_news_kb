@@ -86,12 +86,12 @@ class _FakeClient:
 
 
 def test_pick_limit_on_empty_database(tmp_path):
-    scheduler = _make_scheduler(tmp_path, initial_fetch_limit=50, fetch_limit=10)
+    scheduler = _make_scheduler(tmp_path, initial_fetch_limit=50)
     assert scheduler.pick_fetch_limit() == 50
 
 
 def test_pick_limit_daily_after_recent_fetch(tmp_path):
-    scheduler = _make_scheduler(tmp_path, initial_fetch_limit=50, fetch_limit=10)
+    scheduler = _make_scheduler(tmp_path, initial_fetch_limit=50)
     _insert_announcement(scheduler.db)
     with scheduler.db.connect() as conn:
         conn.execute(
@@ -106,7 +106,7 @@ def test_pick_limit_daily_after_recent_fetch(tmp_path):
 
 def test_pick_limit_catchup_after_downtime(tmp_path):
     scheduler = _make_scheduler(
-        tmp_path, fetch_limit=10, catchup_fetch_limit=50
+        tmp_path, catchup_fetch_limit=50
     )
     _insert_announcement(scheduler.db)
     with scheduler.db.connect() as conn:

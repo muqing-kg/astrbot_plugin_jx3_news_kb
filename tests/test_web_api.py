@@ -25,7 +25,6 @@ class FakePlugin:
         self.ingest = IngestService(self.db)
         self.scheduler = SchedulerService(self.db, self.ingest, ActivityService(self.db))
         self.config = {
-            "sync_interval_minutes": 60,
             "socket_enabled": True,
             "daily_full_pull_time": "03:00",
         }
@@ -100,7 +99,6 @@ def test_stats_counts_and_next_fetch(plugin):
     assert data["counts"]["announcements"] == 1
     assert data["next_fetch_at"].endswith("+08:00")
     assert data["socket_enabled"] is True
-    assert data["sync_interval_minutes"] == 60
     assert data["daily_full_pull_time"] == "03:00"
     assert data["reminder_enabled"] is True
     assert data["reminder_targets"] == 0  # FakePlugin whitelist is empty
@@ -235,18 +233,14 @@ def test_activities_lists_only_ongoing(plugin):
     assert data["items"][0]["announcement_title"] == "版本更新公告"
 
 
-def test_activities_list_the_moments_a_reminder_will_fire(plugin):
-    _insert_future_activity(plugin, name="只剩一个活动")
-    plugin.scheduler.create_pending_reminders(
-        ReminderTargets(sessions=[FULL_GROUP_SESSION, "fake:FriendMessage:20002"])
-    )
-    assert plugin.db.count("reminders") == 4
+def test_activities_report_how_many_are_ongoing(plugin):
+    _insert_future_activity(plugin, name="进行中的活动")
+    _insert_future_activity(plugin, name="已结束的活动", end_time="2020-01-01T00:00:00+08:00")
 
     data = asyncio.run(routes.handle_activities(plugin, {}, {}))
-    times = data["items"][0]["reminder_times"].split(",")
-    # Two targets, one activity: the moment is listed once, not per target.
-    assert len(times) == 2
-    assert times == sorted(set(times))
+
+    assert data["total"] == 1
+    assert "reminder_times" not in data["items"][0]
 
 
 def test_activity_delete_removes_reminders_without_confirmation(plugin):

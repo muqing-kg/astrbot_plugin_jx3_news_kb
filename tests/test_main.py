@@ -175,14 +175,12 @@ def test_out_of_range_fetch_limits_are_clamped(monkeypatch, tmp_path):
     """A typo like 100 or 0 would make NewsClient reject every sync."""
     config = {
         "initial_fetch_limit": 500,
-        "fetch_limit": 0,
         "catchup_fetch_limit": "abc",
     }
 
     _, plugin, _ = _make_plugin(monkeypatch, tmp_path, config=config)
 
     assert plugin.scheduler.initial_fetch_limit == 50
-    assert plugin.scheduler.fetch_limit == 1
     assert plugin.scheduler.catchup_fetch_limit == 50
 
 
@@ -230,60 +228,57 @@ def test_push_writes_row_then_fills_body(monkeypatch, tmp_path):
     assert "9 月 20 日" in row["content_text"]
 
 
-def test_next_sync_uses_configured_interval(monkeypatch, tmp_path):
-    _, plugin, _ = _make_plugin(
-        monkeypatch,
-        tmp_path,
-        config={"sync_interval_minutes": 60, "daily_full_pull_time": "03:00"},
-    )
+def test_next_full_pull_targets_the_configured_time(monkeypatch, tmp_path):
+    _, plugin, _ = _make_plugin(monkeypatch, tmp_path)
     now = datetime.now(plugin.timezone)
-    plugin.config["daily_full_pull_time"] = (now + timedelta(hours=10)).strftime("%H:%M")
+    moment = now + timedelta(minutes=30)
+    if moment.date() != now.date():
+        pytest.skip("临近午夜，配置的时刻会落到明天")
+    plugin.config["daily_full_pull_time"] = moment.strftime("%H:%M")
 
-    wait, daily = plugin.next_sync()
-    if daily:  # 十小时后跨过午夜时，日更会比常规间隔更早
-        assert wait <= 60 * 60
-    else:
-        assert wait == pytest.approx(3600)
-
-
-def test_next_sync_switches_to_daily_full_pull(monkeypatch, tmp_path):
-    _, plugin, _ = _make_plugin(
-        monkeypatch,
-        tmp_path,
-        config={"sync_interval_minutes": 60, "daily_full_pull_time": "03:00"},
-    )
-    now = datetime.now(plugin.timezone)
-    if now.hour >= 23:
-        pytest.skip("临近午夜，日更与常规间隔会重叠")
-    plugin.config["daily_full_pull_time"] = (now + timedelta(minutes=30)).strftime(
-        "%H:%M"
-    )
-
-    wait, daily = plugin.next_sync()
-    assert daily is True
+    wait = plugin.next_full_pull()
     assert 0 < wait <= 30 * 60
 
 
-def test_next_sync_catches_up_a_missed_daily_pull(monkeypatch, tmp_path):
-    """A sync that straddles 03:00 must not silently skip the day's full pull."""
-    _, plugin, _ = _make_plugin(
-        monkeypatch,
-        tmp_path,
-        config={"sync_interval_minutes": 60, "daily_full_pull_time": "03:00"},
-    )
+def test_next_full_pull_catches_up_a_missed_time(monkeypatch, tmp_path):
+    """A sync that straddles the pull time must not silently skip the day."""
+    _, plugin, _ = _make_plugin(monkeypatch, tmp_path)
     now = datetime.now(plugin.timezone)
     missed = now - timedelta(minutes=5)
     if missed.date() != now.date():
-        pytest.skip("刚过午夜，日更时刻落在昨天")
+        pytest.skip("刚过午夜，核对时刻落在昨天")
     plugin.config["daily_full_pull_time"] = missed.strftime("%H:%M")
 
-    wait, daily = plugin.next_sync()
-    assert daily is True
-    assert wait == 0.0
+    assert plugin.next_full_pull() == 0.0
 
     plugin._daily_done = now.date()
-    _, daily = plugin.next_sync()
-    assert daily is False
+    assert plugin.next_full_pull() > 0
+
+
+def test_failed_full_pull_waits_before_retrying(monkeypatch, tmp_path):
+    """A dead endpoint must not turn the loop into a tight retry."""
+    main_module, plugin, _ = _make_plugin(monkeypatch, tmp_path)
+    sleeps: list[float] = []
+
+    async def fake_fetch(limit=None):
+        return {"success": False, "error": "boom"}
+
+    async def fake_sleep(seconds):
+        sleeps.append(seconds)
+        if len(sleeps) >= 2:
+            raise asyncio.CancelledError
+
+    async def noop():
+        return None
+
+    plugin._run_fetch_job_guarded = fake_fetch
+    plugin._startup_sync = noop
+    monkeypatch.setattr(main_module.asyncio, "sleep", fake_sleep)
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(plugin._sync_loop())
+
+    assert sleeps[-1] == main_module.RETRY_AFTER_SECONDS
 
 
 def test_send_due_reminders_marks_sent(monkeypatch, tmp_path):
@@ -502,17 +497,18 @@ def test_send_failure_keeps_reminder_pending(monkeypatch, tmp_path):
     assert "platform offline" in row["error"]
 
 
-def test_next_sync_waits_out_the_daily_cooldown(monkeypatch, tmp_path):
-    """A failed daily pull backs off instead of retrying in a tight loop."""
-    from datetime import datetime, timedelta
-
+def test_push_reconnect_pulls_once_more(monkeypatch, tmp_path):
+    """A reconnect must fill whatever arrived while the socket was down."""
     _, plugin, _ = _make_plugin(monkeypatch, tmp_path)
-    plugin.config["daily_full_pull_time"] = "00:00"
-    plugin._daily_done = None
-    plugin._daily_cooldown_until = datetime.now(plugin.timezone) + timedelta(minutes=5)
+    calls: list[int | None] = []
 
-    wait, daily = plugin.next_sync()
+    async def fake_fetch(limit=None):
+        calls.append(limit)
+        return {"success": True}
 
-    assert daily is True
-    assert 0 < wait <= 300
+    plugin._run_fetch_job_guarded = fake_fetch
+
+    asyncio.run(plugin._on_push_connected())
+
+    assert calls == [None]
 

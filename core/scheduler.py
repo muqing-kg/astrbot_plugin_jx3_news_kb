@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 # A gap longer than this since the last successful fetch means announcements
 # were missed and a large catch-up fetch is needed.
 CATCHUP_THRESHOLD = timedelta(hours=36)
+DEFAULT_FETCH_LIMIT = 10
 # Fetch and reminder logs older than this are pruned by the fetch job.
 LOG_RETENTION_DAYS = 7
 FINGERPRINT_RETENTION_DAYS = 60
@@ -170,7 +171,6 @@ class SchedulerService:
         activity_service: ActivityService,
         timezone_name: str = "Asia/Shanghai",
         initial_fetch_limit: int = 50,
-        fetch_limit: int = 10,
         catchup_fetch_limit: int = 50,
     ) -> None:
         self.db = database
@@ -178,7 +178,6 @@ class SchedulerService:
         self.activities = activity_service
         self.timezone = ZoneInfo(timezone_name)
         self.initial_fetch_limit = max(1, int(initial_fetch_limit))
-        self.fetch_limit = max(1, int(fetch_limit))
         self.catchup_fetch_limit = max(1, int(catchup_fetch_limit))
 
     def now(self) -> datetime:
@@ -217,7 +216,7 @@ class SchedulerService:
             finished = finished.astimezone(self.timezone)
         if self.now() - finished > CATCHUP_THRESHOLD:
             return self.catchup_fetch_limit
-        return self.fetch_limit
+        return DEFAULT_FETCH_LIMIT
 
     async def fetch_and_ingest(
         self,

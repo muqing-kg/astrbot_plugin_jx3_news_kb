@@ -90,7 +90,6 @@ async def handle_stats(plugin: Any, query: dict[str, Any], payload: dict[str, An
         "reminder_targets": int(plugin.reminder_target_count()),
         "scheduler_alive": bool(plugin.background_alive()),
         "socket_enabled": bool(plugin.config.get("socket_enabled", True)),
-        "sync_interval_minutes": int(plugin.config.get("sync_interval_minutes", 360)),
         "daily_full_pull_time": str(plugin.config.get("daily_full_pull_time") or "03:00"),
     }
 
@@ -218,21 +217,25 @@ async def handle_activities(
             SELECT a.id, a.name, a.action, a.category, a.start_time, a.end_time,
                    a.item_expiry, a.item_name, a.explanation, a.confidence,
                    an.title AS announcement_title, an.url,
-                   date(an.published_at) AS announcement_date,
-                   (SELECT GROUP_CONCAT(DISTINCT substr(r.scheduled_at, 6, 11))
-                    FROM reminders r
-                    WHERE r.activity_id = a.id AND r.status = 'pending'
-                      AND r.scheduled_at > ?)
-                       AS reminder_times
+                   date(an.published_at) AS announcement_date
             FROM activities a
             JOIN announcements an ON an.id = a.announcement_id
             WHERE COALESCE(NULLIF(a.item_expiry, ''), NULLIF(a.end_time, '')) > ?
             ORDER BY COALESCE(NULLIF(a.item_expiry, ''), NULLIF(a.end_time, ''))
             LIMIT 200
             """,
-            (now_iso, now_iso),
+            (now_iso,),
         ).fetchall()
-    return {"items": [dict(row) for row in rows]}
+        total = int(
+            conn.execute(
+                """
+                SELECT COUNT(*) FROM activities a
+                WHERE COALESCE(NULLIF(a.item_expiry, ''), NULLIF(a.end_time, '')) > ?
+                """,
+                (now_iso,),
+            ).fetchone()[0]
+        )
+    return {"items": [dict(row) for row in rows], "total": total}
 
 
 async def handle_activity_delete(

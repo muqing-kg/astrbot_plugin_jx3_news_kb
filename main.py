@@ -55,9 +55,9 @@ except Exception:  # noqa: BLE001 - logging must never stop the plugin loading
 
 PLUGIN_NAME = "astrbot_plugin_jx3_news_kb"
 REMINDER_LOOP_INTERVAL = 60
-DEFAULT_SYNC_INTERVAL_MINUTES = 360
 DEFAULT_DAILY_PULL_TIME = "03:00"
 DEFAULT_DAILY_PULL_LIMIT = 50
+RETRY_AFTER_SECONDS = 600
 
 
 def _as_int(config: Any, key: str, default: int) -> int:
@@ -90,7 +90,6 @@ class JX3NewsKBPlugin(Star):
             self.activity_service,
             timezone_name=self.timezone.key,
             initial_fetch_limit=_as_limit(self.config, "initial_fetch_limit", 50),
-            fetch_limit=_as_limit(self.config, "fetch_limit", 10),
             catchup_fetch_limit=_as_limit(self.config, "catchup_fetch_limit", 50),
         )
         self.client = NewsClient(
@@ -104,6 +103,7 @@ class JX3NewsKBPlugin(Star):
             proxy=str(self.config.get("proxy") or ""),
             ping_seconds=_as_int(self.config, "socket_ping_seconds", 30),
             logger=logger,
+            on_connect=self._on_push_connected,
         )
         self._background_tasks: list[asyncio.Task] = []
         self._sync_lock = asyncio.Lock()
@@ -111,7 +111,6 @@ class JX3NewsKBPlugin(Star):
         # Day the daily full pull last ran; a sync straddling the configured
         # time must not push the pull to tomorrow.
         self._daily_done: date | None = None
-        self._daily_cooldown_until: datetime | None = None
         self._backfill_pending = False
         self._register_routes()
         self._try_start_background_tasks()
@@ -290,30 +289,19 @@ class JX3NewsKBPlugin(Star):
             not task.done() for task in self._background_tasks
         )
 
-    def _sync_interval_seconds(self) -> float:
-        minutes = _as_int(self.config, "sync_interval_minutes", DEFAULT_SYNC_INTERVAL_MINUTES)
-        return float(max(1, minutes) * 60)
-
-    def next_sync(self) -> tuple[float, bool]:
-        """Seconds until the next sync, and whether it is the daily full pull."""
+    def next_full_pull(self) -> float:
+        """Seconds until the next daily full pull."""
         now = datetime.now(self.timezone)
         hour, minute = parse_hhmm(
             str(self.config.get("daily_full_pull_time") or DEFAULT_DAILY_PULL_TIME),
             (3, 0),
         )
-        daily = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-        if daily <= now and self._daily_done == now.date():
-            daily += timedelta(days=1)
-        if daily <= now:
-            # The pull time already passed today and has not run yet. Wait out
-            # the previous failure instead of retrying in a tight loop.
-            if self._daily_cooldown_until and now < self._daily_cooldown_until:
-                return (self._daily_cooldown_until - now).total_seconds(), True
-            return 0.0, True
-        interval = self._sync_interval_seconds()
-        if (daily - now).total_seconds() <= interval:
-            return (daily - now).total_seconds(), True
-        return interval, False
+        target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if target <= now and self._daily_done == now.date():
+            target += timedelta(days=1)
+        if target <= now:
+            return 0.0
+        return (target - now).total_seconds()
 
     async def _sync_loop(self) -> None:
         try:
@@ -321,26 +309,19 @@ class JX3NewsKBPlugin(Star):
         except Exception:  # noqa: BLE001 - the loop must survive startup races
             logger.exception("启动同步/提醒调度检查失败")
         while True:
-            wait, daily = self.next_sync()
-            await asyncio.sleep(wait)
-            limit = None
+            wait = self.next_full_pull()
+            if wait > 0:
+                await asyncio.sleep(wait)
             run_day = datetime.now(self.timezone).date()
-            if daily:
-                limit = _as_limit(
-                    self.config, "daily_full_pull_limit", DEFAULT_DAILY_PULL_LIMIT
-                )
-            result = await self._run_fetch_job_guarded(limit)
-            # Only a successful pull counts for the day it was planned for: a
-            # failure stays eligible for the catch-up branch of next_sync,
-            # after a cooldown so a dead endpoint is not hammered.
-            if daily:
-                if result.get("success"):
-                    self._daily_done = run_day
-                    self._daily_cooldown_until = None
-                else:
-                    self._daily_cooldown_until = datetime.now(self.timezone) + (
-                        timedelta(seconds=self._sync_interval_seconds())
-                    )
+            result = await self._run_fetch_job_guarded(
+                _as_limit(self.config, "daily_full_pull_limit", DEFAULT_DAILY_PULL_LIMIT)
+            )
+            if result.get("success"):
+                # Only a successful pull counts for the day it was planned for.
+                self._daily_done = run_day
+            else:
+                # A dead endpoint is retried after a pause, not in a tight loop.
+                await asyncio.sleep(RETRY_AFTER_SECONDS)
 
     async def _startup_sync(self) -> None:
         # Fresh install: build the initial announcement base right away.
@@ -362,8 +343,8 @@ class JX3NewsKBPlugin(Star):
                 self.scheduler.create_pending_reminders(targets)
 
     def next_sync_at(self) -> str:
-        """Next scheduled sync as wall-clock text, for the status page."""
-        wait, _ = self.next_sync()
+        """Next full pull as wall-clock text, for the status page."""
+        wait = self.next_full_pull()
         return (datetime.now(self.timezone) + timedelta(seconds=wait)).isoformat(
             timespec="seconds"
         )
@@ -404,9 +385,14 @@ class JX3NewsKBPlugin(Star):
             if not self._backfill_pending:
                 return
 
+    async def _on_push_connected(self) -> None:
+        """Catch up on whatever arrived while the socket was down."""
+        logger.info("推送通道已连接，补拉一次公告")
+        await self._run_fetch_job_guarded(None)
+
     async def _push_loop(self) -> None:
         if not bool(self.config.get("socket_enabled", True)):
-            logger.info("实时推送已关闭，仅按定时同步拉取公告")
+            logger.info("实时推送已关闭，公告只靠每日全量核对补齐")
             return
         await self.push.run(self._on_push)
 

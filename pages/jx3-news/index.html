@@ -15,7 +15,7 @@
     <nav class="tabs" id="tabs">
       <button class="tab active" data-tab="overview">总览</button>
       <button class="tab" data-tab="announcements">公告管理</button>
-      <button class="tab" data-tab="reminders">到期提醒</button>
+      <button class="tab" data-tab="reminders">活动汇总</button>
       <button class="tab" data-tab="logs">同步日志</button>
     </nav>
 
@@ -36,7 +36,7 @@
             <button id="btn-fetch-10">同步 10 条</button>
             <button id="btn-fetch-50" class="secondary">全量核对 50 条</button>
           </div>
-          <p class="hint">日常由实时推送和定时同步自动执行；手动按钮用于首次安装或异常兜底。</p>
+          <p class="hint">日常由实时推送、断线补拉与每日全量核对自动执行；手动按钮用于首次安装或异常兜底。</p>
           <div id="action-result" class="action-result" hidden></div>
         </div>
 
@@ -59,7 +59,7 @@
           <table class="data-table">
             <thead>
               <tr>
-                <th>日期</th><th>类型</th><th>标题</th><th>活动</th><th>操作</th>
+                <th>日期</th><th>类型</th><th>标题</th><th>活动数</th><th>操作</th>
               </tr>
             </thead>
             <tbody id="ann-tbody"></tbody>
@@ -105,11 +105,12 @@
         </div>
       </section>
 
-      <!-- 到期提醒：进行中的活动 -->
+      <!-- 活动汇总：进行中的活动 -->
       <section id="panel-reminders" class="panel">
         <div class="card">
           <div class="toolbar">
             <button id="btn-act-refresh">刷新</button>
+            <span id="act-total" class="muted" style="margin-left: auto"></span>
           </div>
           <div id="act-result" class="result" hidden></div>
           <div id="activities-list"></div>

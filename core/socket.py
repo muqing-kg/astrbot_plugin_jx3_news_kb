@@ -47,11 +47,13 @@ class PushClient:
         proxy: str = "",
         ping_seconds: int = 30,
         logger: Any | None = None,
+        on_connect: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
         self.url = str(url or DEFAULT_SOCKET_URL).strip()
         self.proxy = str(proxy or "").strip()
         self.ping_seconds = max(1, int(ping_seconds))
         self.logger = logger
+        self.on_connect = on_connect
 
     def _log(self, level: str, message: str, *args: Any) -> None:
         if self.logger is not None:
@@ -85,6 +87,13 @@ class PushClient:
                 proxy=self.proxy or None,
             ) as websocket:
                 self._log("info", "推送通道已连接：%s", self.url)
+                if self.on_connect is not None:
+                    try:
+                        await self.on_connect()
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as exc:  # noqa: BLE001 - never drop the socket
+                        self._log("warning", "连接后的补拉失败：%s", str(exc)[:200])
                 async for message in websocket:
                     if message.type is aiohttp.WSMsgType.TEXT:
                         await self._dispatch(message.data, on_news)
