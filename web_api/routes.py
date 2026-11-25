@@ -26,11 +26,28 @@ def _int_query(query: dict[str, Any], key: str, default: int, minimum: int, maxi
 
 async def handle_stats(plugin: Any, query: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
     db = plugin.db
-    counts = {
-        table: db.count(table)
-        for table in ("announcements", "activities", "reminders")
-    }
+    now_iso = plugin.scheduler.now().isoformat(timespec="seconds")
     with db.connect() as conn:
+        counts = {
+            "announcements": db.count("announcements"),
+            # Same definition as the activity list: deadline still ahead.
+            "activities": int(
+                conn.execute(
+                    "SELECT COUNT(*) FROM activities a"
+                    " WHERE COALESCE(NULLIF(a.item_expiry, ''),"
+                    " NULLIF(a.end_time, ''), '') > ?",
+                    (now_iso,),
+                ).fetchone()[0]
+            ),
+            # No deadline at all: kept on purpose, never reminded.
+            "long_term": int(
+                conn.execute(
+                    "SELECT COUNT(*) FROM activities a"
+                    " WHERE COALESCE(NULLIF(a.item_expiry, ''),"
+                    " NULLIF(a.end_time, ''), '') = ''"
+                ).fetchone()[0]
+            ),
+        }
         pending = int(
             conn.execute(
                 "SELECT COUNT(*) FROM reminders WHERE status = 'pending'"
@@ -209,33 +226,42 @@ async def handle_announcement_delete(
 async def handle_activities(
     plugin: Any, query: dict[str, Any], payload: dict[str, Any]
 ) -> dict[str, Any]:
-    """Ongoing activities: deadline (item expiry first) still in the future."""
+    """Activities still worth listing: deadline ahead, or no deadline at all."""
     now_iso = plugin.scheduler.now().isoformat(timespec="seconds")
+    deadline = "COALESCE(NULLIF(a.item_expiry, ''), NULLIF(a.end_time, ''), '')"
     with plugin.db.connect() as conn:
         rows = conn.execute(
-            """
+            f"""
             SELECT a.id, a.name, a.action, a.category, a.start_time, a.end_time,
                    a.item_expiry, a.item_name, a.explanation, a.confidence,
+                   {deadline} AS deadline,
                    an.title AS announcement_title, an.url,
                    date(an.published_at) AS announcement_date
             FROM activities a
             JOIN announcements an ON an.id = a.announcement_id
-            WHERE COALESCE(NULLIF(a.item_expiry, ''), NULLIF(a.end_time, '')) > ?
-            ORDER BY COALESCE(NULLIF(a.item_expiry, ''), NULLIF(a.end_time, ''))
+            WHERE {deadline} > ? OR {deadline} = ''
+            ORDER BY ({deadline} = '') ASC, {deadline} ASC
             LIMIT 200
             """,
             (now_iso,),
         ).fetchall()
-        total = int(
+        ongoing = int(
             conn.execute(
-                """
-                SELECT COUNT(*) FROM activities a
-                WHERE COALESCE(NULLIF(a.item_expiry, ''), NULLIF(a.end_time, '')) > ?
-                """,
+                f"SELECT COUNT(*) FROM activities a WHERE {deadline} > ?",
                 (now_iso,),
             ).fetchone()[0]
         )
-    return {"items": [dict(row) for row in rows], "total": total}
+        long_term = int(
+            conn.execute(
+                f"SELECT COUNT(*) FROM activities a WHERE {deadline} = ''"
+            ).fetchone()[0]
+        )
+    return {
+        "items": [dict(row) for row in rows],
+        "total": ongoing + long_term,
+        "ongoing": ongoing,
+        "long_term": long_term,
+    }
 
 
 async def handle_activity_delete(

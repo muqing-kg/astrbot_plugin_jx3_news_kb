@@ -61,10 +61,10 @@ function setupTabs() {
 function renderStats(data) {
   const counts = data.counts || {};
   const cards = [
-    ["在库公告", counts.announcements],
-    ["在库活动", counts.activities],
-    ["待发提醒（条）", data.pending_reminders],
-    ["提醒目标", data.reminder_targets ?? 0],
+    ["公告数量", counts.announcements ?? 0],
+    ["进行中活动", counts.activities ?? 0],
+    ["长期活动", counts.long_term ?? 0],
+    ["提醒目标（群 / 私聊）", data.reminder_targets ?? 0],
     ["后台任务", data.scheduler_alive ? "运行中" : "未运行"],
     ["推送通道", data.socket_enabled ? "已启用" : "未启用"],
     ["每日全量核对", data.daily_full_pull_time || "03:00"],
@@ -305,7 +305,7 @@ async function loadActivities() {
   const data = await callApi(() => bridge.apiGet("activities"), null);
   if (!data) return;
   const items = data.items || [];
-  $("act-total").textContent = `共 ${data.total ?? items.length} 条活动`;
+  $("act-total").textContent = `共 ${data.total ?? items.length} 条活动（进行中 ${data.ongoing ?? 0} · 长期 ${data.long_term ?? 0}）`;
   $("activities-list").innerHTML = items.length
     ? items
         .map((item) => {
@@ -313,11 +313,14 @@ async function loadActivities() {
           if (item.start_time) times.push(`开始：<span class="hl">${fmtDateTime(item.start_time)}</span>`);
           if (item.end_time) times.push(`截止：<span class="hl">${fmtDateTime(item.end_time)}</span>`);
           if (item.item_expiry) times.push(`券/道具消失：<span class="hl">${fmtDateTime(item.item_expiry)}</span>`);
+          const longTerm = !item.deadline;
+          if (longTerm) times.push(`截止：<span class="hl">长期</span>`);
           return `
           <div class="reminder-item">
             <div class="item-head">
               <span class="name">${escapeHtml(item.name)}</span>
               <span class="tag">${escapeHtml(item.category)}</span>
+              ${longTerm ? '<span class="tag">长期</span>' : ""}
               <button class="danger-btn" data-act-del="${item.id}">删除</button>
             </div>
             <div class="muted">
@@ -329,7 +332,7 @@ async function loadActivities() {
           </div>`;
         })
         .join("")
-    : '<div class="muted">当前没有进行中的活动。</div>';
+    : '<div class="muted">当前没有进行中或长期的活动。</div>';
 }
 
 function setupActivities() {

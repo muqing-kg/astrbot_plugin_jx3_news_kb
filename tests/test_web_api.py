@@ -105,6 +105,18 @@ def test_stats_counts_and_next_fetch(plugin):
     assert data["upcoming_reminders"] == []
 
 
+def test_stats_count_ongoing_and_long_term_activities(plugin):
+    _insert_future_activity(plugin, name="进行中")
+    _insert_future_activity(
+        plugin, name="已结束", end_time="2020-01-01T00:00:00+08:00"
+    )
+    _insert_future_activity(plugin, name="长期", end_time="")
+    data = asyncio.run(routes.handle_stats(plugin, {}, {}))
+    assert data["counts"]["activities"] == 1
+    assert data["counts"]["long_term"] == 1
+    assert set(data["counts"]) == {"announcements", "activities", "long_term"}
+
+
 def test_announcement_list_search_and_pagination(plugin):
     for index in range(25):
         _insert_announcement(
