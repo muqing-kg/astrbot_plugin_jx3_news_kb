@@ -219,8 +219,10 @@ async def handle_activities(
                    a.item_expiry, a.item_name, a.explanation, a.confidence,
                    an.title AS announcement_title, an.url,
                    date(an.published_at) AS announcement_date,
-                   (SELECT COUNT(*) FROM reminders r
-                    WHERE r.activity_id = a.id AND r.status = 'pending')
+                   (SELECT COUNT(DISTINCT r.activity_id) FROM reminders r
+                    JOIN activities v ON v.id = r.activity_id
+                    WHERE v.announcement_id = a.announcement_id
+                      AND r.status = 'pending')
                        AS pending_reminders
             FROM activities a
             JOIN announcements an ON an.id = a.announcement_id
