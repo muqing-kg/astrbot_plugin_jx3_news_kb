@@ -437,8 +437,11 @@ class SchedulerService:
         with self.db.connect() as conn:
             rows = conn.execute(query, params).fetchall()
             # Re-scheduling replaces pending slots so a config change takes
-            # effect immediately; slots already due are kept (see
-            # RECENT_SLOT_GRACE) because their dispatch may be in flight.
+            # effect immediately. Only slots that are still in the future are
+            # dropped: a slot that just came due must survive, or a rebuild in
+            # the same minute as the slot (the hourly sync lands on :00) eats
+            # it before the dispatch loop can send it.
+            now_text = now.isoformat(timespec="seconds")
             cutoff = (now - RECENT_SLOT_GRACE).isoformat(timespec="seconds")
             if announcement_ids:
                 marks = ",".join("?" for _ in announcement_ids)
@@ -452,12 +455,12 @@ class SchedulerService:
                           WHERE announcement_id IN ({marks})
                       )
                     """,
-                    [cutoff, *announcement_ids],
+                    [now_text, *announcement_ids],
                 )
             else:
                 conn.execute(
                     "DELETE FROM reminders WHERE status = 'pending' AND scheduled_at > ?",
-                    (cutoff,),
+                    (now_text,),
                 )
             # Slots that came due while the plugin was down are expired, not
             # sent hours later: the rule is "no catch-up".

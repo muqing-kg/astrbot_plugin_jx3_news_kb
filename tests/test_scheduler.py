@@ -329,6 +329,36 @@ def test_remaining_text_variants(tmp_path):
     )
 
 
+def test_slot_that_just_came_due_survives_a_rebuild(tmp_path):
+    """The hourly sync lands on :00 like the 10:00 slot; the rebuild must not
+    delete a slot that is within its dispatch window and then skip rebuilding
+    it because the moment is no longer in the future."""
+    scheduler = _make_scheduler(tmp_path)
+    announcement_id = _insert_announcement(scheduler.db)
+    activity_id = _insert_activity(
+        scheduler.db, announcement_id, end_time="2099-09-17T07:00:00+08:00"
+    )
+    due = (scheduler.now() - timedelta(seconds=3)).isoformat(timespec="seconds")
+    with scheduler.db.connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO reminders(
+                activity_id, target_type, target_id, scheduled_at, message_text
+            ) VALUES (?, 'group', 'fake:GroupMessage:10001', ?, '刚到期')
+            """,
+            (activity_id, due),
+        )
+
+    scheduler.create_pending_reminders(TARGETS)
+
+    with scheduler.db.connect() as conn:
+        status = conn.execute(
+            "SELECT status FROM reminders WHERE scheduled_at = ?", (due,)
+        ).fetchone()[0]
+    assert status == "pending"
+    assert any(row["scheduled_at"] == due for row in scheduler.due_reminders())
+
+
 def test_stale_pending_slot_is_expired_not_sent(tmp_path):
     """A slot that came due while the plugin was down is dropped, not sent late."""
     scheduler = _make_scheduler(tmp_path)
