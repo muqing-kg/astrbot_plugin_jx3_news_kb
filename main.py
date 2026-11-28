@@ -26,7 +26,6 @@ try:
         merge_reminder_texts,
         parse_hhmm,
     )
-    from .core.socket import DEFAULT_SOCKET_URL, PushClient
     from .web_api.routes import ROUTE_TABLE
 except ImportError:  # imported as a top-level module (tests, direct run)
     from core.activities import ActivityService
@@ -39,7 +38,6 @@ except ImportError:  # imported as a top-level module (tests, direct run)
         merge_reminder_texts,
         parse_hhmm,
     )
-    from core.socket import DEFAULT_SOCKET_URL, PushClient
     from web_api.routes import ROUTE_TABLE
 
 try:
@@ -58,6 +56,7 @@ REMINDER_LOOP_INTERVAL = 60
 DEFAULT_DAILY_PULL_TIME = "03:00"
 DEFAULT_DAILY_PULL_LIMIT = 50
 RETRY_AFTER_SECONDS = 600
+DAILY_DONE_KEY = "daily_full_pull_done"
 
 
 def _as_int(config: Any, key: str, default: int) -> int:
@@ -98,20 +97,11 @@ class JX3NewsKBPlugin(Star):
             token=str(self.config.get("api_token") or ""),
             proxy=str(self.config.get("proxy") or ""),
         )
-        self.push = PushClient(
-            url=str(self.config.get("socket_url") or DEFAULT_SOCKET_URL),
-            proxy=str(self.config.get("proxy") or ""),
-            ping_seconds=_as_int(self.config, "socket_ping_seconds", 30),
-            logger=logger,
-            on_connect=self._on_push_connected,
-        )
         self._background_tasks: list[asyncio.Task] = []
         self._sync_lock = asyncio.Lock()
-        self._backfill_task: asyncio.Task | None = None
-        # Day the daily full pull last ran; a sync straddling the configured
-        # time must not push the pull to tomorrow.
-        self._daily_done: date | None = None
-        self._backfill_pending = False
+        # Day the daily full pull last ran. Persisted so a restart does not
+        # re-run a pull that already happened today.
+        self._daily_done: date | None = self._load_daily_done()
         self._register_routes()
         self._try_start_background_tasks()
 
@@ -278,7 +268,6 @@ class JX3NewsKBPlugin(Star):
             return
         for coro, name in (
             (self._sync_loop(), "jx3-announcement-sync"),
-            (self._push_loop(), "jx3-announcement-push"),
             (self._reminder_loop(), "jx3-reminder-dispatch"),
         ):
             self._background_tasks.append(asyncio.create_task(coro, name=name))
@@ -288,6 +277,16 @@ class JX3NewsKBPlugin(Star):
         return bool(self._background_tasks) and any(
             not task.done() for task in self._background_tasks
         )
+
+    def _load_daily_done(self) -> date | None:
+        try:
+            return date.fromisoformat(self.db.get_meta(DAILY_DONE_KEY))
+        except ValueError:
+            return None
+
+    def _mark_daily_done(self, day: date) -> None:
+        self._daily_done = day
+        self.db.set_meta(DAILY_DONE_KEY, day.isoformat())
 
     def next_full_pull(self) -> float:
         """Seconds until the next daily full pull."""
@@ -318,7 +317,7 @@ class JX3NewsKBPlugin(Star):
             )
             if result.get("success"):
                 # Only a successful pull counts for the day it was planned for.
-                self._daily_done = run_day
+                self._mark_daily_done(run_day)
             else:
                 # A dead endpoint is retried after a pause, not in a tight loop.
                 await asyncio.sleep(RETRY_AFTER_SECONDS)
@@ -328,7 +327,7 @@ class JX3NewsKBPlugin(Star):
         if self.db.count("announcements") == 0:
             result = await self._run_fetch_job_guarded(None)
             if result.get("success"):
-                self._daily_done = datetime.now(self.timezone).date()
+                self._mark_daily_done(datetime.now(self.timezone).date())
         # Re-create future reminder slots on every start so a mid-cycle
         # update or restart does not miss today's remaining slots.
         if bool(self.config.get("reminder_enabled", True)):
@@ -350,8 +349,8 @@ class JX3NewsKBPlugin(Star):
         )
 
     async def _run_fetch_job_guarded(self, limit: int | None = None) -> dict[str, Any]:
-        # Push arrivals, the timed sync and the daily full pull share one lock
-        # so two of them never write the same announcement at once.
+        # The loop and the web API share one lock so two runs never write the
+        # same announcement at once.
         async with self._sync_lock:
             try:
                 result = await self.fetch_job(limit)
@@ -361,40 +360,6 @@ class JX3NewsKBPlugin(Star):
         if not result.get("success"):
             logger.warning("同步失败：%s", result.get("error"))
         return result
-
-    async def _on_push(self, detail: dict[str, Any]) -> None:
-        """Write the pushed announcement at once; its body is filled in later."""
-        outcome = self.ingest.ingest_push(detail)
-        logger.info("推送入库：%s（%s）", detail.get("title") or "", outcome)
-        self._request_backfill()
-
-    def _request_backfill(self) -> None:
-        # Coalesce a burst of pushes into one body fetch instead of one per
-        # frame; the reader keeps draining the socket meanwhile.
-        if self._backfill_task is not None and not self._backfill_task.done():
-            self._backfill_pending = True
-            return
-        self._backfill_task = asyncio.create_task(
-            self._drain_backfill(), name="jx3-announcement-backfill"
-        )
-
-    async def _drain_backfill(self) -> None:
-        while True:
-            self._backfill_pending = False
-            await self._run_fetch_job_guarded(None)
-            if not self._backfill_pending:
-                return
-
-    async def _on_push_connected(self) -> None:
-        """Catch up on whatever arrived while the socket was down."""
-        logger.info("推送通道已连接，补拉一次公告")
-        await self._run_fetch_job_guarded(None)
-
-    async def _push_loop(self) -> None:
-        if not bool(self.config.get("socket_enabled", True)):
-            logger.info("实时推送已关闭，公告只靠每日全量核对补齐")
-            return
-        await self.push.run(self._on_push)
 
     async def _reminder_loop(self) -> None:
         while True:
@@ -407,9 +372,6 @@ class JX3NewsKBPlugin(Star):
     async def terminate(self) -> None:
         tasks = list(self._background_tasks)
         self._background_tasks.clear()
-        if self._backfill_task is not None:
-            tasks.append(self._backfill_task)
-            self._backfill_task = None
         for task in tasks:
             task.cancel()
         if tasks:

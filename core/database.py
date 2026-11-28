@@ -180,3 +180,20 @@ class Database:
             raise ValueError("invalid table name")
         with self.connect() as conn:
             return int(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+
+    def get_meta(self, key: str) -> str:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT value FROM schema_meta WHERE key = ?", (key,)
+            ).fetchone()
+        return str(row["value"]) if row else ""
+
+    def set_meta(self, key: str, value: str) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO schema_meta(key, value) VALUES(?, ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                """,
+                (key, value),
+            )

@@ -66,7 +66,6 @@ function renderStats(data) {
     ["长期活动", counts.long_term ?? 0],
     ["提醒目标（群 / 私聊）", data.reminder_targets ?? 0],
     ["后台任务", data.scheduler_alive ? "运行中" : "未运行"],
-    ["推送通道", data.socket_enabled ? "已启用" : "未启用"],
     ["每日全量核对", data.daily_full_pull_time || "03:00"],
   ];
   $("stat-cards").innerHTML = cards

@@ -10,7 +10,6 @@ from .database import Database
 from .text import (
     content_fingerprint,
     parse_date,
-    parse_push_date,
     strip_html,
     unix_to_iso,
 )
@@ -29,22 +28,6 @@ class IngestService:
                 outcome = self._ingest_item(conn, item)
                 result[outcome] += 1
         return result
-
-    def ingest_push(self, detail: dict[str, Any]) -> str:
-        """Write one push payload (title/type/url/date, no body) immediately.
-
-        The body arrives later through the regular records fetch, which fills
-        the empty row in place instead of adding a revision.
-        """
-        item = {
-            "title": str(detail.get("title") or "").strip(),
-            "type": str(detail.get("type") or "").strip(),
-            "url": str(detail.get("url") or "").strip(),
-            "date": parse_push_date(str(detail.get("date") or ""), self.timezone_name),
-            "desc": {},
-        }
-        with self.db.connect() as conn:
-            return self._ingest_item(conn, item)
 
     def _ingest_item(self, conn: sqlite3.Connection, item: dict[str, Any]) -> str:
         desc = item.get("desc") or {}
@@ -113,8 +96,8 @@ class IngestService:
         if str(existing["content_text"] or "").strip() and not content_text.strip():
             return "skipped"
 
-        # A row written from a push carries no body yet: fill it in place so
-        # the revision history stays one entry per real content change.
+        # A row stored without a body (the API had no content yet) is filled in
+        # place so the revision history stays one entry per real content change.
         backfill = not str(existing["content_text"] or "").strip() and bool(
             content_text.strip()
         )

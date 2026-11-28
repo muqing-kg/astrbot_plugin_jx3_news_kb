@@ -25,7 +25,7 @@ class FakePlugin:
         self.ingest = IngestService(self.db)
         self.scheduler = SchedulerService(self.db, self.ingest, ActivityService(self.db))
         self.config = {
-            "socket_enabled": True,
+
             "daily_full_pull_time": "03:00",
         }
         self.fetch_calls: list[int | None] = []
@@ -98,7 +98,6 @@ def test_stats_counts_and_next_fetch(plugin):
     data = asyncio.run(routes.handle_stats(plugin, {}, {}))
     assert data["counts"]["announcements"] == 1
     assert data["next_fetch_at"].endswith("+08:00")
-    assert data["socket_enabled"] is True
     assert data["daily_full_pull_time"] == "03:00"
     assert data["reminder_enabled"] is True
     assert data["reminder_targets"] == 0  # FakePlugin whitelist is empty

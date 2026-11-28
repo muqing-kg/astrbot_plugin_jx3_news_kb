@@ -17,10 +17,10 @@
     "hint": "可选。在 JX3API 申请的访问令牌。"
   },
   "proxy": {
-    "description": "抓取与推送的代理",
+    "description": "公告抓取代理",
     "type": "string",
     "default": "",
-    "hint": "可选。HTTP 代理地址，例如 http://127.0.0.1:7890；同时作用于公告抓取和实时推送。留空则直连。公告源只接受国内 IP 访问。"
+    "hint": "可选。HTTP 代理地址，例如 http://127.0.0.1:7890；留空则直连。公告源只接受国内 IP 访问。"
   },
 
   "initial_fetch_limit": {
@@ -46,24 +46,6 @@
     "type": "int",
     "default": 50,
     "hint": "每日全量核对时拉取的公告条数，也是该轮的补正文上限。"
-  },
-  "socket_enabled": {
-    "description": "启用实时公告推送",
-    "type": "bool",
-    "default": true,
-    "hint": "连上推送通道后，新公告到达即入库，随后补正文并抽取活动。关闭后公告只靠每轮全量核对补齐。"
-  },
-  "socket_url": {
-    "description": "推送通道地址",
-    "type": "string",
-    "default": "wss://socket.nicemoe.cn/",
-    "hint": "JX3API 事件推送地址，一般无需修改。"
-  },
-  "socket_ping_seconds": {
-    "description": "推送心跳间隔（秒）",
-    "type": "int",
-    "default": 30,
-    "hint": "心跳用于保持长连接；断线后按 5 秒起、最长 60 秒的间隔重连。"
   },
   "timezone": {
     "description": "时区",

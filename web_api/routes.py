@@ -106,7 +106,6 @@ async def handle_stats(plugin: Any, query: dict[str, Any], payload: dict[str, An
         "reminder_enabled": bool(plugin.config.get("reminder_enabled", True)),
         "reminder_targets": int(plugin.reminder_target_count()),
         "scheduler_alive": bool(plugin.background_alive()),
-        "socket_enabled": bool(plugin.config.get("socket_enabled", True)),
         "daily_full_pull_time": str(plugin.config.get("daily_full_pull_time") or "03:00"),
     }
 

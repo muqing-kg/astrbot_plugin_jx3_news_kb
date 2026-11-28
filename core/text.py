@@ -100,28 +100,3 @@ def parse_date(value: str) -> str:
         return date(*(int(part) for part in match.groups())).isoformat()
     except ValueError:
         return ""
-
-
-def parse_push_date(value: str, timezone_name: str = "Asia/Shanghai") -> str:
-    """Push payloads carry ``MM/DD`` without a year; infer the nearest one."""
-    text = (value or "").strip()
-    match = re.fullmatch(r"(\d{1,2})/(\d{1,2})", text)
-    if not match:
-        return parse_date(text)
-    today = datetime.now(ZoneInfo(timezone_name)).date()
-    try:
-        day = date(today.year, int(match.group(1)), int(match.group(2)))
-    except ValueError:
-        return ""
-    if day > today + timedelta(days=1):
-        try:
-            day = date(today.year - 1, day.month, day.day)
-        except ValueError:  # 2 月 29 日落在平年
-            day = date(today.year - 1, 3, 1)
-    elif day < today - timedelta(days=180):
-        # Late-December pushes already announce January dates.
-        try:
-            day = date(today.year + 1, day.month, day.day)
-        except ValueError:
-            day = date(today.year + 1, 3, 1)
-    return day.isoformat()

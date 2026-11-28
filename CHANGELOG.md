@@ -1,5 +1,16 @@
 # 更新日志
 
+## 2.3.0
+
+### 不兼容变更
+
+- 移除实时推送：不再连接 `wss://socket.nicemoe.cn/`，同时删除重连补拉、推送入库与 `socket_enabled`、`socket_url`、`socket_ping_seconds` 三项配置。公告只靠每日全量核对入库。
+- 全量核对改为每天一次：默认 03:00 拉 `daily_full_pull_limit` 条，当天跑过就把日期写进库（`schema_meta.daily_full_pull_done`），重载插件或重启进程都不会再补拉一次——用于消除此前每次启动都打一轮 50 条的浪费。
+
+### 移除
+
+- `core/socket.py`、推送入库 `ingest_push()`、`parse_push_date()`、WebUI 总览的「推送通道」卡片。
+
 ## 2.2.1
 
 ### 变更

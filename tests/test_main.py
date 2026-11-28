@@ -184,48 +184,16 @@ def test_out_of_range_fetch_limits_are_clamped(monkeypatch, tmp_path):
     assert plugin.scheduler.catchup_fetch_limit == 50
 
 
-def test_push_writes_row_then_fills_body(monkeypatch, tmp_path):
-    main_module, plugin, _ = _make_plugin(monkeypatch, tmp_path, stub_client=True)
-    plugin.client = _StubClient(
-        [
-            {
-                "catid": "24581",
-                "date": "2026/09/11",
-                "title": "中秋活动公告",
-                "type": "官方公告",
-                "url": "https://example.com/push",
-                "desc": {
-                    "id": "9",
-                    "inputtime": "1789012800",
-                    "content": "<p>活动到 9 月 20 日 7:00 结束。</p>",
-                },
-            }
-        ]
-    )
+def test_daily_pull_is_remembered_across_a_restart(monkeypatch, tmp_path):
+    _, plugin, _ = _make_plugin(monkeypatch, tmp_path)
+    today = datetime.now(plugin.timezone).date()
+    plugin._mark_daily_done(today)
 
-    async def scenario() -> None:
-        await plugin._on_push(
-            {
-                "title": "中秋活动公告",
-                "type": "官方公告",
-                "url": "https://example.com/push",
-                "date": "09/11",
-            }
-        )
-        # The push returns before the body fetch; it runs as a background task.
-        assert plugin._backfill_task is not None
-        await plugin._backfill_task
+    _, reloaded, _ = _make_plugin(monkeypatch, tmp_path)
 
-    asyncio.run(scenario())
-
-    assert len(plugin.client.calls) == 1
-    with plugin.db.connect() as conn:
-        row = conn.execute(
-            "SELECT title, content_text FROM announcements WHERE url = ?",
-            ("https://example.com/push",),
-        ).fetchone()
-    assert row["title"] == "中秋活动公告"
-    assert "9 月 20 日" in row["content_text"]
+    assert reloaded._daily_done == today
+    # Already pulled today, so the next run waits for tomorrow's slot.
+    assert reloaded.next_full_pull() > 0
 
 
 def test_next_full_pull_targets_the_configured_time(monkeypatch, tmp_path):
@@ -386,7 +354,7 @@ def test_background_tasks_start_and_terminate(monkeypatch, tmp_path):
     async def scenario():
         plugin._start_background_tasks()
         tasks = list(plugin._background_tasks)
-        assert len(tasks) == 3
+        assert len(tasks) == 2
         await asyncio.sleep(0.1)
         alive = [not task.done() for task in tasks]
         await plugin.terminate()
@@ -405,7 +373,7 @@ async def test_tasks_start_on_init_inside_running_loop(monkeypatch, tmp_path):
     on_astrbot_loaded on reload; the loops must start from __init__."""
     main_module, plugin, _ = _make_plugin(monkeypatch, tmp_path, stub_client=True)
     # Tasks are created synchronously during construction.
-    assert len(plugin._background_tasks) == 3
+    assert len(plugin._background_tasks) == 2
     assert plugin.background_alive() is True
     await asyncio.sleep(0.1)
     assert plugin.background_alive() is True
@@ -495,20 +463,4 @@ def test_send_failure_keeps_reminder_pending(monkeypatch, tmp_path):
         row = conn.execute("SELECT status, error FROM reminders").fetchone()
     assert row["status"] == "pending"
     assert "platform offline" in row["error"]
-
-
-def test_push_reconnect_pulls_once_more(monkeypatch, tmp_path):
-    """A reconnect must fill whatever arrived while the socket was down."""
-    _, plugin, _ = _make_plugin(monkeypatch, tmp_path)
-    calls: list[int | None] = []
-
-    async def fake_fetch(limit=None):
-        calls.append(limit)
-        return {"success": True}
-
-    plugin._run_fetch_job_guarded = fake_fetch
-
-    asyncio.run(plugin._on_push_connected())
-
-    assert calls == [None]
 
